@@ -1,0 +1,16 @@
+compute_environment: LOCAL_MACHINE
+debug: false
+deepspeed_config:
+  deepspeed_config_file: "./starVLA/config/deepseeds/ds_config_zero3_8gpu.yaml"
+  deepspeed_multinode_launcher: standard
+  zero3_init_flag: false
+distributed_type: DEEPSPEED
+num_machines: 1
+num_processes: 8
+main_training_function: main
+mixed_precision: bf16
+use_cpu: false
+downcast_bf16: 'no'
+rdzv_backend: static
+same_network: true
+machine_rank: 0
