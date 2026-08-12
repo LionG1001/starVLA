@@ -14,6 +14,8 @@
 # limitations under the License.
 
 
+import os
+
 import av
 import cv2
 import numpy as np
@@ -35,6 +37,18 @@ try:
     TORCHCODEC_AVAILABLE = True
 except (ImportError, RuntimeError):
     TORCHCODEC_AVAILABLE = False
+
+
+def _configure_pyav_decoder(stream) -> None:
+    """Bound libav decoder threads to avoid per-rank libdav1d memory spikes."""
+    thread_count = int(os.getenv("STARVLA_PYAV_THREADS", "1"))
+    if thread_count <= 0:
+        return
+
+    codec_context = stream.codec_context
+    codec_context.thread_count = thread_count
+    if thread_count == 1:
+        codec_context.thread_type = "NONE"
 
 
 def get_frames_by_indices(
@@ -74,6 +88,7 @@ def get_frames_by_indices(
         try:
             container = av.open(video_path)
             stream = container.streams.video[0]
+            _configure_pyav_decoder(stream)
             time_base = float(stream.time_base)
             fps = float(stream.average_rate) if stream.average_rate else float(stream.guessed_rate)
             
@@ -188,6 +203,7 @@ def get_frames_by_timestamps(
         try:
             container = av.open(video_path, options={'threads': '1'})
             stream = container.streams.video[0]
+            _configure_pyav_decoder(stream)
             
             # Get video properties
             time_base = float(stream.time_base)
@@ -326,6 +342,7 @@ def get_all_frames(
         return frames.data.numpy(), frames.pts_seconds.numpy()
     elif video_backend == "pyav":
         container = av.open(video_path)
+        _configure_pyav_decoder(container.streams.video[0])
         frames = []
         for frame in container.decode(video=0):
             frame = frame.to_ndarray(format="rgb24")

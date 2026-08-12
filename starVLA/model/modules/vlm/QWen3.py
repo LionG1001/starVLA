@@ -83,7 +83,7 @@ class _QWen3_VL_Interface(nn.Module):
         Forward pass delegating to underlying Qwen2.5-VL backbone.
         """
 
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast("musa", dtype=torch.bfloat16):
             outputs = self.model(
                 **kwargs,
             )
@@ -102,7 +102,7 @@ class _QWen3_VL_Interface(nn.Module):
         Returns:
             GenerateOutput | Model-dependent generation return.
         """
-        with torch.autocast("cuda", dtype=torch.float16):
+        with torch.autocast("musa", dtype=torch.float16):
             generation_output = self.model.generate(
                 **kwargs,
             )

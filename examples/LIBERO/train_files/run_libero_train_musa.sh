@@ -117,7 +117,7 @@ accelerate launch \
   --main_process_ip ${MASTER_ADDR} \
   --main_process_port ${MASTER_PORT} \
   --num_machines ${NNODES} \
-  --config_file $workdir/starVLA/config/deepseeds/deepspeed_zero2_musa.yaml \
+  --config_file $workdir/starVLA/config/deepseeds/deepspeed_zero1_musa.yaml \
   --num_processes $NUM_PROCESS \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \

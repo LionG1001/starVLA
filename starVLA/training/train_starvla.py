@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import time
 from pathlib import Path
 from typing import Tuple
@@ -49,6 +50,76 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger = get_logger(__name__)
 
 
+def _parse_bool_flag(value, *, name: str) -> bool:
+    """Parse config/environment boolean flags without treating "false" as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean value, got {value!r}")
+
+
+def _build_adamw_optimizer(param_groups, cfg):
+    """Build AdamW, using torch_musa's fused implementation when requested."""
+    fused_requested = _parse_bool_flag(
+        cfg.trainer.optimizer.get("fused", False),
+        name="trainer.optimizer.fused",
+    )
+    env_override = os.getenv("STARVLA_ENABLE_FUSED_OPTIMIZER")
+    if env_override is not None:
+        fused_requested = _parse_bool_flag(
+            env_override,
+            name="STARVLA_ENABLE_FUSED_OPTIMIZER",
+        )
+
+    optimizer_class = torch.optim.AdamW
+    fused_enabled = False
+    if fused_requested:
+        musa_available = hasattr(torch, "musa") and torch.musa.is_available()
+        if musa_available:
+            try:
+                # Import the submodule explicitly: ``import torch_musa`` alone
+                # does not expose ``torch_musa.optim`` in every release.
+                from torch_musa.optim import FusedAdamW
+
+                optimizer_class = FusedAdamW
+                fused_enabled = True
+            except (ImportError, AttributeError) as exc:
+                if not dist.is_initialized() or dist.get_rank() == 0:
+                    logger.warning(
+                        "MUSA FusedAdamW was requested but is unavailable; "
+                        f"falling back to torch.optim.AdamW: {exc}"
+                    )
+        elif not dist.is_initialized() or dist.get_rank() == 0:
+            logger.warning(
+                "FusedAdamW was requested outside a MUSA runtime; "
+                "falling back to torch.optim.AdamW"
+            )
+
+    optimizer = optimizer_class(
+        param_groups,
+        lr=cfg.trainer.learning_rate.base,
+        betas=tuple(cfg.trainer.optimizer.betas),
+        weight_decay=cfg.trainer.optimizer.weight_decay,
+        eps=cfg.trainer.optimizer.eps,
+    )
+
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        logger.info(
+            "Optimizer implementation: "
+            f"{optimizer_class.__module__}.{optimizer_class.__name__} "
+            f"(fused_requested={fused_requested}, fused_enabled={fused_enabled})"
+        )
+
+    return optimizer
+
+
 def load_fast_tokenizer():
     return AutoProcessor.from_pretrained("physical-intelligence/fast", trust_remote_code=True)
 
@@ -78,13 +149,7 @@ def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
 def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
     """Set optimizer and scheduler."""
     param_groups = build_param_lr_groups(model=model, cfg=cfg)
-    optimizer = torch.optim.AdamW(
-        param_groups,
-        lr=cfg.trainer.learning_rate.base,
-        betas=tuple(cfg.trainer.optimizer.betas),
-        weight_decay=cfg.trainer.optimizer.weight_decay,
-        eps=cfg.trainer.optimizer.eps,
-    )
+    optimizer = _build_adamw_optimizer(param_groups=param_groups, cfg=cfg)
 
     if dist.is_initialized() and dist.get_rank() == 0:
         for group in optimizer.param_groups:
@@ -116,6 +181,114 @@ class VLATrainer(TrainerUtils):
         # TFLOPs and MFU tracking - GPU Peak TFLOPs for MUSA GPU
         # Set default to 500T (500 TFLOPs) for your MUSA GPU
         self.gpu_peak_tflops = getattr(cfg.trainer, "gpu_peak_tflops", 460.0)
+
+    def _create_profiler(self):
+        """Create an opt-in, bounded profiler for the selected distributed ranks."""
+        enabled = _parse_bool_flag(
+            os.getenv("STARVLA_PROFILE_ENABLED", "0"),
+            name="STARVLA_PROFILE_ENABLED",
+        )
+        if not enabled:
+            return None
+
+        rank = self.accelerator.process_index
+        rank_spec = os.getenv("STARVLA_PROFILE_RANKS", "0").strip().lower()
+        if rank_spec not in {"all", "*"}:
+            try:
+                selected_ranks = {int(value.strip()) for value in rank_spec.split(",") if value.strip()}
+            except ValueError as exc:
+                raise ValueError(
+                    "STARVLA_PROFILE_RANKS must be 'all' or a comma-separated list of integer ranks"
+                ) from exc
+            if rank not in selected_ranks:
+                return None
+
+        def _schedule_value(name: str, default: int, minimum: int = 0) -> int:
+            value = int(os.getenv(name, str(default)))
+            if value < minimum:
+                raise ValueError(f"{name} must be >= {minimum}, got {value}")
+            return value
+
+        wait_steps = _schedule_value("STARVLA_PROFILE_WAIT", 2)
+        warmup_steps = _schedule_value("STARVLA_PROFILE_WARMUP", 1)
+        active_steps = _schedule_value("STARVLA_PROFILE_ACTIVE", 3, minimum=1)
+        repeat = _schedule_value("STARVLA_PROFILE_REPEAT", 1, minimum=1)
+
+        trace_root = Path(
+            os.getenv(
+                "STARVLA_PROFILE_DIR",
+                os.path.join(self.config.output_dir, "traces"),
+            )
+        )
+        rank_trace_dir = trace_root / f"rank_{rank:02d}"
+        rank_trace_dir.mkdir(parents=True, exist_ok=True)
+
+        activities = [torch.profiler.ProfilerActivity.CPU]
+        if hasattr(torch, "musa") and torch.musa.is_available():
+            activities.append(torch.profiler.ProfilerActivity.MUSA)
+        elif torch.cuda.is_available():
+            activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+        use_gzip = _parse_bool_flag(
+            os.getenv("STARVLA_PROFILE_GZIP", "1"),
+            name="STARVLA_PROFILE_GZIP",
+        )
+        profile_memory = _parse_bool_flag(
+            os.getenv("STARVLA_PROFILE_MEMORY", "1"),
+            name="STARVLA_PROFILE_MEMORY",
+        )
+        with_stack = _parse_bool_flag(
+            os.getenv("STARVLA_PROFILE_STACK", "1"),
+            name="STARVLA_PROFILE_STACK",
+        )
+
+        metadata = {
+            "rank": rank,
+            "world_size": self.accelerator.num_processes,
+            "host": socket.gethostname(),
+            "torch_version": torch.__version__,
+            "activities": [activity.name for activity in activities],
+            "schedule": {
+                "wait": wait_steps,
+                "warmup": warmup_steps,
+                "active": active_steps,
+                "repeat": repeat,
+            },
+            "record_shapes": True,
+            "profile_memory": profile_memory,
+            "with_stack": with_stack,
+        }
+        (rank_trace_dir / "profile_config.json").write_text(
+            json.dumps(metadata, indent=2),
+            encoding="utf-8",
+        )
+
+        logger.info(
+            "Profiler enabled on rank %s: wait=%s warmup=%s active=%s repeat=%s output=%s",
+            rank,
+            wait_steps,
+            warmup_steps,
+            active_steps,
+            repeat,
+            rank_trace_dir,
+        )
+        return torch.profiler.profile(
+            activities=activities,
+            schedule=torch.profiler.schedule(
+                wait=wait_steps,
+                warmup=warmup_steps,
+                active=active_steps,
+                repeat=repeat,
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                str(rank_trace_dir),
+                worker_name=f"{socket.gethostname()}_rank{rank:02d}",
+                use_gzip=use_gzip,
+            ),
+            record_shapes=True,
+            profile_memory=profile_memory,
+            with_stack=with_stack,
+        )
 
     def prepare_training(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -276,7 +449,7 @@ class VLATrainer(TrainerUtils):
                 # MFU = (TFLOPs per step) / (GPU Peak TFLOPs * time in seconds)
                 actual_tflops = model_tflops / model_time if model_time > 0 else 0
                 mfu_percent = (actual_tflops / self.gpu_peak_tflops) * 100
-                # metrics["mfu_percent"] = mfu_percent
+                metrics["mfu_percent"] = mfu_percent
                 metrics["actual_tflops"] = actual_tflops
                 mfu_str = f" | MFU: {mfu_percent:.2f}% ({actual_tflops:.2f}/{self.gpu_peak_tflops} TFLOPs)"
 
@@ -311,58 +484,51 @@ class VLATrainer(TrainerUtils):
         progress_bar = tqdm(
             range(self.config.trainer.max_train_steps), disable=not self.accelerator.is_local_main_process
         )
-        from torch.profiler import profile, ProfilerActivity, tensorboard_trace_handler
-        prof = profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.MUSA],
-                schedule=torch.profiler.schedule(
-                    wait=1,       # 跳过前1个step
-                    warmup=1,     # 预热1个step（不记录）
-                    active=1,     # 分析3个step
-                    repeat=1      # 只重复1次整个周期
-                ),
-                on_trace_ready=tensorboard_trace_handler(f"./log/starvla_{self.total_batch_size}", use_gzip=False),
-                record_shapes=True,
-                with_stack=True
-            )
+        profiler = self._create_profiler()
+        if profiler is not None:
+            profiler.start()
 
-            # 显式启动分析器
-        # prof.start()
-        while self.completed_steps < 3000000:
-            t_start_data = time.perf_counter()
-            batch_vla = self._get_next_batch()
-            t_end_data = time.perf_counter()
+        try:
+            while self.completed_steps < self.config.trainer.max_train_steps:
+                t_start_data = time.perf_counter()
+                with torch.profiler.record_function("starvla.data_loading"):
+                    batch_vla = self._get_next_batch()
+                t_end_data = time.perf_counter()
 
-            t_start_model = time.perf_counter()
-            
-            step_metrics = self._train_step(batch_vla)
-            # prof.step()
+                t_start_model = time.perf_counter()
+                with torch.profiler.record_function("starvla.train_step"):
+                    step_metrics = self._train_step(batch_vla)
+                t_end_model = time.perf_counter()
 
-            t_end_model = time.perf_counter()
+                if self.accelerator.sync_gradients:
+                    progress_bar.update(1)
+                    self.completed_steps += 1
 
-            if self.accelerator.sync_gradients:
-                progress_bar.update(1)
-                self.completed_steps += 1
+                if self.accelerator.is_local_main_process:
+                    progress_bar.set_postfix(
+                        {
+                            "data_times": f"{t_end_data - t_start_data:.3f}",
+                            "model_times": f"{t_end_model - t_start_model:.3f}",
+                        }
+                    )
 
-            if self.accelerator.is_local_main_process:
-                progress_bar.set_postfix(
-                    {
-                        "data_times": f"{t_end_data - t_start_data:.3f}",
-                        "model_times": f"{t_end_model - t_start_model:.3f}",
-                    }
-                )
+                if self.completed_steps % self.config.trainer.eval_interval == 0:
+                    with torch.profiler.record_function("starvla.evaluation"):
+                        step_metrics = self.eval_action_model(step_metrics)
 
-            if self.completed_steps % self.config.trainer.eval_interval == 0:
-                step_metrics = self.eval_action_model(step_metrics)
+                step_metrics["data_time"] = t_end_data - t_start_data
+                step_metrics["model_time"] = t_end_model - t_start_model
+                self._log_metrics(step_metrics)
 
-            step_metrics["data_time"] = t_end_data - t_start_data
-            step_metrics["model_time"] = t_end_model - t_start_model
-            self._log_metrics(step_metrics)
+                if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
+                    with torch.profiler.record_function("starvla.checkpoint"):
+                        self._save_checkpoint()
 
-            if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
-                self._save_checkpoint()
-
-            if self.completed_steps >= self.config.trainer.max_train_steps:
-                break
+                if profiler is not None:
+                    profiler.step()
+        finally:
+            if profiler is not None:
+                profiler.stop()
 
         self._finalize_training()
 
@@ -443,18 +609,22 @@ class VLATrainer(TrainerUtils):
             self.optimizer.zero_grad()
 
             # MUSA support: use cuda autocast for both CUDA and MUSA (torch_musa compatible)
-            with torch.autocast("musa", dtype=torch.bfloat16):
-                output_dict = self.model.forward(batch_vla)
-                action_loss = output_dict["action_loss"]
-                total_loss = action_loss
+            with torch.profiler.record_function("starvla.forward"):
+                with torch.autocast("musa", dtype=torch.bfloat16):
+                    output_dict = self.model.forward(batch_vla)
+                    action_loss = output_dict["action_loss"]
+                    total_loss = action_loss
 
-            self.accelerator.backward(total_loss)
+            with torch.profiler.record_function("starvla.backward"):
+                self.accelerator.backward(total_loss)
 
             if self.config.trainer.gradient_clipping is not None:
-                self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+                with torch.profiler.record_function("starvla.gradient_clipping"):
+                    self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
 
-            self.optimizer.step()
-            self.lr_scheduler.step()
+            with torch.profiler.record_function("starvla.optimizer"):
+                self.optimizer.step()
+                self.lr_scheduler.step()
 
         return {
             "action_dit_loss": action_loss.item(),
@@ -535,4 +705,3 @@ if __name__ == "__main__":
         debugpy.wait_for_client()
 
     main(cfg)
-

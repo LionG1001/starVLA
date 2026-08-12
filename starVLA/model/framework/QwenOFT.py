@@ -123,7 +123,7 @@ class Qwenvl_OFT(baseframework):
 
         # Step 1: QWenVL input format
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast("musa", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
                 output_attentions=False,
@@ -134,7 +134,7 @@ class Qwenvl_OFT(baseframework):
             last_hidden = qwenvl_outputs.hidden_states[-1]   # [B, L, H]
 
         # Step 4: Action Expert Forward and Loss
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("musa", dtype=torch.float32):
             # 提取动作 token embedding 作为动作预测查询
             input_ids = qwen_inputs.get("input_ids", None)
             action_queries = self._gather_action_token_embeddings(last_hidden, input_ids, action_token_id=self.action_token_id)  # [B, chunk_len, H]
@@ -185,7 +185,7 @@ class Qwenvl_OFT(baseframework):
 
         # Step 1: QWenVL input format
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast("musa", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
                 output_attentions=False,
