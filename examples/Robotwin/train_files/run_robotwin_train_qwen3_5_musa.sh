@@ -25,9 +25,9 @@ export STARVLA_ENABLE_FUSED_OPTIMIZER="${STARVLA_ENABLE_FUSED_OPTIMIZER:-1}"
 export STARVLA_PYAV_THREADS="${STARVLA_PYAV_THREADS:-1}"
 # auto preserves the framework defaults. Set 0 for the Qwen3.5 RoPE TF32
 # isolation run so every Accelerate/DeepSpeed rank uses full FP32 matmul.
-export STARVLA_ALLOW_TF32="${STARVLA_ALLOW_TF32:-auto}"
+export STARVLA_ALLOW_TF32="${STARVLA_ALLOW_TF32:-0}"
 # FLA is opt-in until its numerical and performance baselines are validated.
-export STARVLA_QWEN35_FLA_FASTPATH="${STARVLA_QWEN35_FLA_FASTPATH:-0}"
+export STARVLA_QWEN35_FLA_FASTPATH="${STARVLA_QWEN35_FLA_FASTPATH:-1}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
