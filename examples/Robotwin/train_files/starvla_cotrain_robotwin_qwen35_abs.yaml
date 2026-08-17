@@ -116,9 +116,9 @@ trainer:
     betas: [0.9, 0.95]
     eps: 1.0e-08
     weight_decay: 1.0e-08
-    # true：MUSA 上优先使用 torch_musa FusedAdamW，减少逐张量算子启动；不可用时自动回退 AdamW。
-    # 排查精度或进行性能 A/B 时可设为 false。
-    fused: true
+    # 当前 MTT S5000/torch_musa 版本上，Qwen3.5 的 native AdamW 比
+    # FusedAdamW 更快；FusedAdamW 保留为显式 A/B 选项。
+    fused: false
   is_resume: false
   resume_epoch: null
   resume_step: null

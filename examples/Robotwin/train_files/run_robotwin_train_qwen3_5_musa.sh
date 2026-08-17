@@ -21,7 +21,10 @@ export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 export MUSA_EXECUTION_TIMEOUT="${MUSA_EXECUTION_TIMEOUT:-3200000}"
 export MCCL_CROSS_NIC="${MCCL_CROSS_NIC:-0}"
 export MCCL_SOCKET_IFNAME="${MCCL_SOCKET_IFNAME:-bond0}"
-export STARVLA_ENABLE_FUSED_OPTIMIZER="${STARVLA_ENABLE_FUSED_OPTIMIZER:-1}"
+# On the validated MTT S5000/torch_musa stack, the native AdamW path is
+# faster for this Qwen3.5 shape. Set STARVLA_ENABLE_FUSED_OPTIMIZER=1 only
+# for an explicit A/B or on a stack where FusedAdamW has been revalidated.
+export STARVLA_ENABLE_FUSED_OPTIMIZER="${STARVLA_ENABLE_FUSED_OPTIMIZER:-0}"
 export STARVLA_PYAV_THREADS="${STARVLA_PYAV_THREADS:-1}"
 # auto preserves the framework defaults. Set 0 for the Qwen3.5 RoPE TF32
 # isolation run so every Accelerate/DeepSpeed rank uses full FP32 matmul.
