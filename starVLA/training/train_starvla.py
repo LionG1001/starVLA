@@ -14,9 +14,9 @@ Conventions:
 import argparse
 import json
 import os
-import re
 import socket
 import time
+from collections import deque
 from pathlib import Path
 from typing import Tuple
 
@@ -36,8 +36,50 @@ from transformers import AutoProcessor, get_scheduler
 # Local Modules
 from starVLA.dataloader import build_dataloader
 from starVLA.model.framework import build_framework
+from starVLA.training.mfu import (
+    QWEN35_MFU_FORMULA_VERSION,
+    Qwen35BatchFlopShape,
+    Qwen35ModelFlopConfig,
+    estimate_qwen35_training_flops,
+)
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, normalize_dotlist_args
+
+
+def _configure_tf32_from_env() -> None:
+    """Apply an explicit TF32 policy before Accelerate initializes each rank."""
+    setting = os.getenv("STARVLA_ALLOW_TF32", "auto").strip().lower()
+    if setting == "auto":
+        return
+    if setting in {"1", "true", "yes", "on"}:
+        enabled = True
+    elif setting in {"0", "false", "no", "off"}:
+        enabled = False
+    else:
+        raise ValueError(
+            "STARVLA_ALLOW_TF32 must be auto/1/0/true/false/on/off, "
+            f"but got {setting!r}"
+        )
+
+    # torch_musa's muBLAS path uses the CUDA-compatible matmul flag, while
+    # muDNN exposes its own flag. Set both so the policy is unambiguous.
+    torch.backends.cuda.matmul.allow_tf32 = enabled
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.allow_tf32 = enabled
+    if hasattr(torch.backends, "mudnn"):
+        torch.backends.mudnn.allow_tf32 = enabled
+    torch.set_float32_matmul_precision("high" if enabled else "highest")
+    print(
+        "StarVLA TF32 policy: "
+        f"allow={enabled}, "
+        f"cuda_matmul={torch.backends.cuda.matmul.allow_tf32}, "
+        f"mudnn={getattr(getattr(torch.backends, 'mudnn', None), 'allow_tf32', 'n/a')}, "
+        f"matmul_precision={torch.get_float32_matmul_precision()}",
+        flush=True,
+    )
+
+
+_configure_tf32_from_env()
 
 deepspeed_plugin = DeepSpeedPlugin()
 accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
@@ -63,6 +105,54 @@ def _parse_bool_flag(value, *, name: str) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     raise ValueError(f"{name} must be a boolean value, got {value!r}")
+
+
+def _parameter_count(module) -> int:
+    return sum(parameter.numel() for parameter in module.parameters())
+
+
+def _build_qwen35_flop_config(model) -> Qwen35ModelFlopConfig | None:
+    """Collect Qwen3.5 component sizes once, before DeepSpeed wraps the model."""
+    qwen_interface = getattr(model, "qwen_vl_interface", None)
+    backbone = getattr(qwen_interface, "model", None)
+    backbone_config = getattr(backbone, "config", None)
+    if getattr(backbone_config, "model_type", None) != "qwen3_5":
+        return None
+
+    try:
+        text_config = backbone_config.text_config
+        vision_config = backbone_config.vision_config
+        language_model = backbone.model.language_model
+        vision_model = backbone.model.visual
+        layer_types = list(text_config.layer_types)
+        full_attention_layers = sum(layer_type == "full_attention" for layer_type in layer_types)
+        linear_attention_layers = sum(layer_type == "linear_attention" for layer_type in layer_types)
+        if len(layer_types) != text_config.num_hidden_layers or full_attention_layers == 0:
+            raise ValueError(
+                "Qwen3.5 layer_types must describe every layer and contain full-attention layers"
+            )
+
+        return Qwen35ModelFlopConfig(
+            text_layer_parameters=_parameter_count(language_model.layers),
+            full_attention_layers=full_attention_layers,
+            linear_attention_layers=linear_attention_layers,
+            text_attention_heads=int(text_config.num_attention_heads),
+            text_head_dim=int(text_config.head_dim),
+            linear_num_value_heads=int(text_config.linear_num_value_heads),
+            linear_key_head_dim=int(text_config.linear_key_head_dim),
+            linear_value_head_dim=int(text_config.linear_value_head_dim),
+            vision_block_parameters=_parameter_count(vision_model.blocks),
+            vision_patch_parameters=_parameter_count(vision_model.patch_embed),
+            vision_merger_parameters=_parameter_count(vision_model.merger),
+            vision_layers=int(vision_config.depth),
+            vision_attention_heads=int(vision_config.num_heads),
+            vision_head_dim=int(vision_config.hidden_size // vision_config.num_heads),
+            vision_spatial_merge_size=int(vision_config.spatial_merge_size),
+            action_parameters=_parameter_count(model.action_model),
+            lm_head_parameters=_parameter_count(backbone.lm_head),
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError("Failed to collect Qwen3.5 MFU model metadata") from exc
 
 
 def _build_adamw_optimizer(param_groups, cfg):
@@ -179,8 +269,19 @@ class VLATrainer(TrainerUtils):
         self.total_batch_size = self._calculate_total_batch_size()
 
         # TFLOPs and MFU tracking - GPU Peak TFLOPs for MUSA GPU
-        # Set default to 500T (500 TFLOPs) for your MUSA GPU
-        self.gpu_peak_tflops = getattr(cfg.trainer, "gpu_peak_tflops", 460.0)
+        # This is an explicit per-device BF16 peak assumption, not a runtime query.
+        self.gpu_peak_tflops = float(getattr(cfg.trainer, "gpu_peak_tflops", 460.0))
+        if self.gpu_peak_tflops <= 0:
+            raise ValueError("trainer.gpu_peak_tflops must be positive")
+        self.qwen35_flop_config = None
+        self.mfu_formula_version = "legacy_qwen25_v1"
+        self.mfu_warmup_steps = int(getattr(cfg.trainer, "mfu_warmup_steps", 10))
+        self.mfu_window_size = int(getattr(cfg.trainer, "mfu_window_size", 20))
+        if self.mfu_warmup_steps < 0:
+            raise ValueError("trainer.mfu_warmup_steps must be non-negative")
+        if self.mfu_window_size <= 0:
+            raise ValueError("trainer.mfu_window_size must be positive")
+        self._mfu_window = deque(maxlen=self.mfu_window_size)
 
     def _create_profiler(self):
         """Create an opt-in, bounded profiler for the selected distributed ranks."""
@@ -305,6 +406,9 @@ class VLATrainer(TrainerUtils):
         )
         self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
         self.print_trainable_parameters(self.model)
+        self.qwen35_flop_config = _build_qwen35_flop_config(self.model)
+        if self.qwen35_flop_config is not None:
+            self.mfu_formula_version = QWEN35_MFU_FORMULA_VERSION
         def nan_check_hook(module, inputs, output):
             def has_bad(x):
                 return torch.isnan(x).any() or torch.isinf(x).any()
@@ -437,27 +541,41 @@ class VLATrainer(TrainerUtils):
 
     def _log_metrics(self, metrics):
         """Record training metrics."""
-        if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
+        if dist.get_rank() != 0:
+            return
+
+        if "estimated_tflops_per_device_step" in metrics and "model_time" in metrics:
+            step_tflops = float(metrics["estimated_tflops_per_device_step"])
+            step_time = float(metrics["model_time"])
+            if self.completed_steps > self.mfu_warmup_steps and step_time > 0:
+                self._mfu_window.append((step_tflops, step_time))
+
+        if self.completed_steps % self.config.trainer.logging_frequency == 0:
             metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0]
             metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
 
-            # Calculate MFU (Model FLOPs Utilization)
-            mfu_str = ""
-            if "model_tflops_per_step" in metrics and "model_time" in metrics:
-                model_tflops = metrics["model_tflops_per_step"]
+            # Calculate per-device MFU from useful model FLOPs and wall time.
+            if "estimated_tflops_per_device_step" in metrics and "model_time" in metrics:
+                model_tflops = metrics["estimated_tflops_per_device_step"]
                 model_time = metrics["model_time"]
-                # MFU = (TFLOPs per step) / (GPU Peak TFLOPs * time in seconds)
-                actual_tflops = model_tflops / model_time if model_time > 0 else 0
-                mfu_percent = (actual_tflops / self.gpu_peak_tflops) * 100
+                achieved_tflops = model_tflops / model_time if model_time > 0 else 0
+                mfu_percent = (achieved_tflops / self.gpu_peak_tflops) * 100
+                metrics["achieved_tflops_per_device"] = achieved_tflops
+                metrics["peak_tflops_per_device"] = self.gpu_peak_tflops
                 metrics["mfu_percent"] = mfu_percent
-                metrics["actual_tflops"] = actual_tflops
-                mfu_str = f" | MFU: {mfu_percent:.2f}% ({actual_tflops:.2f}/{self.gpu_peak_tflops} TFLOPs)"
+                if self._mfu_window:
+                    window_tflops = sum(item[0] for item in self._mfu_window)
+                    window_time = sum(item[1] for item in self._mfu_window)
+                    rolling_tflops = window_tflops / window_time
+                    metrics["achieved_tflops_per_device_rolling"] = rolling_tflops
+                    metrics["mfu_percent_rolling"] = (
+                        rolling_tflops / self.gpu_peak_tflops * 100
+                    )
+                    metrics["mfu_window_steps"] = len(self._mfu_window)
 
             log_msg = f"Step {self.completed_steps}, Loss: {metrics}"
-            # wandb.log(metrics, step=self.completed_steps)
-            logger.info(log_msg)
-            # Also print to console directly
-            print(log_msg)
+            # Keep one unwrapped, machine-readable line in the launcher log.
+            print(log_msg, flush=True)
 
     def _create_data_iterators(self):
         """Create data iterators."""
@@ -557,9 +675,16 @@ class VLATrainer(TrainerUtils):
             logger.info(f"  Per device batch size = {self.config.datasets.vla_data.per_device_batch_size}")
             logger.info(f"  Gradient accumulation steps = {self.config.trainer.gradient_accumulation_steps}")
             logger.info(f"  Total batch size = {self.total_batch_size}")
-            logger.info(f"  GPU Peak TFLOPs = {self.gpu_peak_tflops}")
+            logger.info(f"  GPU Peak TFLOPs per device = {self.gpu_peak_tflops}")
+            logger.info(f"  MFU formula = {self.mfu_formula_version}")
+            logger.info(
+                "  MFU rolling window = %s measured steps after %s warmup steps",
+                self.mfu_window_size,
+                self.mfu_warmup_steps,
+            )
+            logger.info("  MFU scope = useful per-device model FLOPs; checkpoint recomputation excluded")
 
-    def _estimate_model_tflops(self, batch_size, seq_len=2048):
+    def _estimate_legacy_model_tflops(self, batch_size, seq_len=2048):
         """
         Estimate model TFLOPs for one forward pass.
         For Qwen2.5-VL-3B model + action head.
@@ -578,7 +703,7 @@ class VLATrainer(TrainerUtils):
         # Transformer FLOPs per layer (forward pass)
         # Attention: 4 * batch * seq_len^2 * hidden_size
         # MLP: 2 * batch * seq_len * hidden_size * intermediate_size * 2
-        attention_flops = 4 * batch_size * seq_len * hidden_size * hidden_size 
+        attention_flops = 4 * batch_size * seq_len * hidden_size * hidden_size
         mlp_flops = 4 * batch_size * seq_len * hidden_size * intermediate_size
         layer_flops = attention_flops + mlp_flops
 
@@ -599,11 +724,46 @@ class VLATrainer(TrainerUtils):
 
         return training_flops_per_step / 1e12  # Convert to TFLOPs
 
+    def _estimate_model_tflops(self, batch_size, mfu_metadata=None):
+        """Return per-device FLOPs metrics for the active model and batch."""
+        if self.qwen35_flop_config is None:
+            return {
+                "estimated_tflops_per_device_step": self._estimate_legacy_model_tflops(batch_size),
+                "mfu_formula": self.mfu_formula_version,
+            }
+
+        if mfu_metadata is None:
+            raise RuntimeError("Qwen3.5 forward did not return MFU batch metadata")
+        shape = Qwen35BatchFlopShape(
+            batch_size=int(mfu_metadata["batch_size"]),
+            padded_language_sequence_length=int(mfu_metadata["padded_language_sequence_length"]),
+            vision_patch_tokens=int(mfu_metadata["vision_patch_tokens"]),
+            num_images=int(mfu_metadata["num_images"]),
+            action_tokens_per_sample=int(mfu_metadata["action_tokens_per_sample"]),
+            logits_tokens_per_sample=int(mfu_metadata.get("logits_tokens_per_sample", 1)),
+        )
+        estimate = estimate_qwen35_training_flops(self.qwen35_flop_config, shape)
+        return {
+            "estimated_tflops_per_device_step": estimate["estimated_tflops_per_device_step"],
+            "estimated_text_tflops_per_device_step": estimate[
+                "estimated_text_tflops_per_device_step"
+            ],
+            "estimated_vision_tflops_per_device_step": estimate[
+                "estimated_vision_tflops_per_device_step"
+            ],
+            "estimated_action_tflops_per_device_step": estimate[
+                "estimated_action_tflops_per_device_step"
+            ],
+            "mfu_formula": estimate["formula_version"],
+            "language_tokens_per_device": estimate["language_tokens_per_device"],
+            "vision_patch_tokens_per_device": estimate["vision_patch_tokens_per_device"],
+            "vision_merged_tokens_per_device": estimate["vision_merged_tokens_per_device"],
+            "action_tokens_per_device": estimate["action_tokens_per_device"],
+        }
+
     def _train_step(self, batch_vla, batch_vlm=None):
         """Execute single training step."""
-        # Estimate TFLOPs for this step
         batch_size = len(batch_vla) if isinstance(batch_vla, list) else batch_vla.get('input_ids', torch.zeros(1)).shape[0]
-        model_tflops = self._estimate_model_tflops(batch_size)
 
         with self.accelerator.accumulate(self.model):
             self.optimizer.zero_grad()
@@ -626,9 +786,13 @@ class VLATrainer(TrainerUtils):
                 self.optimizer.step()
                 self.lr_scheduler.step()
 
+        flop_metrics = self._estimate_model_tflops(
+            batch_size,
+            mfu_metadata=output_dict.get("mfu_metadata"),
+        )
         return {
             "action_dit_loss": action_loss.item(),
-            "model_tflops_per_step": model_tflops,
+            **flop_metrics,
         }
 
     def _finalize_training(self):

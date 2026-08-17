@@ -1,6 +1,6 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
-# Implemented by [Jinhui YE / HKUST University] in [2025]. 
+# Implemented by [Jinhui YE / HKUST University] in [2025].
 
 """
 Qwen-OFT Framework
@@ -19,20 +19,17 @@ Note: How to add special tokens to Qwen2.5:
   or /starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md （adpat a little code)
   
 """
-from typing import List
-from tqdm import tqdm
 from typing import List, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
-
-
-from starVLA.training.trainer_utils import initialize_overwatch
-from starVLA.model.tools import FRAMEWORK_REGISTRY
 from deployment.model_server.tools.image_tools import to_pil_preserve
+from starVLA.model.tools import FRAMEWORK_REGISTRY
+from starVLA.training.trainer_utils import initialize_overwatch
 
 logger = initialize_overwatch(__name__)
 
@@ -40,9 +37,10 @@ logger = initialize_overwatch(__name__)
 IGNORE_INDEX = -100
 
 from starVLA.model.framework.base_framework import baseframework
-from starVLA.model.modules.vlm import get_vlm_model
 from starVLA.model.modules.action_model.MLP_ActionHeader import get_action_model
+from starVLA.model.modules.vlm import get_vlm_model
 from starVLA.training.trainer_utils.trainer_tools import resize_images
+
 
 @FRAMEWORK_REGISTRY.register("QwenOFT")
 class Qwenvl_OFT(baseframework):
@@ -81,9 +79,17 @@ class Qwenvl_OFT(baseframework):
         self.past_action_window_size = config.framework.action_model.past_action_window_size
         self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
         # self.hidden_dim = config.framework.action_model.action_hidden_dim
-        
-        self.action_token = "🔍" # TODO also can add spacail token to Qwen, but too complex
-        self.action_token_id = self.qwen_vl_interface.processor.tokenizer("🔍", add_special_tokens=False)["input_ids"][0]
+
+        self.action_token = config.framework.qwenvl.get("action_token", "🔍")
+        # Each placeholder must map to one token because the action head gathers
+        # exactly one hidden state per predicted action. Taking only the first id
+        # of a multi-token encoding would leave extra token fragments between
+        # action queries and make their positions tokenizer-dependent.
+        self.action_token_id = self._validate_action_token(
+            self.qwen_vl_interface.processor.tokenizer,
+            self.action_token,
+            self.chunk_len,
+        )
 
         # L1 损失
         self.l1_loss = nn.L1Loss()
@@ -115,14 +121,32 @@ class Qwenvl_OFT(baseframework):
         batch_images = [example["image"] for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
         actions = [example["action"] for example in examples]  # label [B， len, 7]
-        
+
         # step 0: add special action token to instruction
-        action_tokens = self.action_token* self.chunk_len #can't add " " between two tokens, otherwise will be tokenized to multiple tokens
+        # Keep placeholders adjacent; initialization has already verified that
+        # repetition produces exactly ``chunk_len`` copies of the same token.
+        action_tokens = self.action_token * self.chunk_len
         prompt_suffix = f" Please predict the next {self.chunk_len} robot actions: <action>{action_tokens}<action>."
         instructions = [instruction + prompt_suffix for instruction in instructions]
 
         # Step 1: QWenVL input format
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
+        input_ids = qwen_inputs.get("input_ids")
+        if input_ids is None:
+            raise RuntimeError("Qwen processor did not return input_ids")
+        pixel_values = qwen_inputs.get("pixel_values")
+        image_grid_thw = qwen_inputs.get("image_grid_thw")
+        mfu_metadata = {
+            # Shapes are Python metadata and do not synchronize the accelerator.
+            "batch_size": int(input_ids.shape[0]),
+            "padded_language_sequence_length": int(input_ids.shape[1]),
+            "vision_patch_tokens": int(pixel_values.shape[0]) if pixel_values is not None else 0,
+            "num_images": int(image_grid_thw.shape[0]) if image_grid_thw is not None else 0,
+            "action_tokens_per_sample": int(self.chunk_len),
+            # QWen3_5.forward requests logits_to_keep=1. The logits are not used
+            # by action_loss, so the MFU estimator counts this branch forward-only.
+            "logits_tokens_per_sample": 1,
+        }
         with torch.autocast("musa", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
@@ -133,23 +157,32 @@ class Qwenvl_OFT(baseframework):
             # last_hidden_state: [B, seq_len, H]
             last_hidden = qwenvl_outputs.hidden_states[-1]   # [B, L, H]
 
-        # Step 4: Action Expert Forward and Loss
-        with torch.autocast("musa", dtype=torch.float32):
-            # 提取动作 token embedding 作为动作预测查询
-            input_ids = qwen_inputs.get("input_ids", None)
-            action_queries = self._gather_action_token_embeddings(last_hidden, input_ids, action_token_id=self.action_token_id)  # [B, chunk_len, H]
-            pred_actions = self.action_model.predict_action(action_queries)  # (B, chunk_len, action_dim)
+        # Step 4: Action Expert Forward and Loss. A bare action head is usually
+        # FP32, while DeepSpeed BF16 may cast it to BF16. Outside autocast this
+        # conversion prevents mixed input/weight dtypes; under outer autocast,
+        # eligible GEMMs may still be selected as BF16 by the autocast policy.
+        action_dtype = next(self.action_model.parameters()).dtype
+        action_queries = self._gather_action_token_embeddings(
+            last_hidden,
+            input_ids,
+            action_token_id=self.action_token_id,
+        ).to(dtype=action_dtype)
+        pred_actions = self.action_model.predict_action(action_queries)  # (B, chunk_len, action_dim)
 
-            # 标签对齐：取最后 chunk_len 段
-            actions = torch.tensor(
-                np.array(actions), device=pred_actions.device, dtype=pred_actions.dtype
-            )  # [B, T_full, action_dim]
-            actions_target = actions[:, -(self.future_action_window_size+1):, :]  # (B, chunk_len, action_dim)
+        # 标签对齐：取最后 chunk_len 段
+        actions = torch.tensor(
+            np.array(actions), device=pred_actions.device, dtype=pred_actions.dtype
+        )  # [B, T_full, action_dim]
+        if actions.shape[1] < self.chunk_len:
+            raise ValueError(
+                f"Action label length {actions.shape[1]} is shorter than chunk_len={self.chunk_len}"
+            )
+        actions_target = actions[:, -self.chunk_len :, :]  # (B, chunk_len, action_dim)
 
-            # 计算 L1 损失
-            action_loss = self.l1_loss(pred_actions, actions_target)
+        # 计算 L1 损失
+        action_loss = self.l1_loss(pred_actions, actions_target)
 
-        return {"action_loss": action_loss}
+        return {"action_loss": action_loss, "mfu_metadata": mfu_metadata}
 
     @torch.inference_mode()
     def predict_action(
@@ -173,13 +206,13 @@ class Qwenvl_OFT(baseframework):
             examples = [examples]
         batch_images = [to_pil_preserve(example["image"]) for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
-    
+
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
-    
+
         # step 0: add special action token to instruction
-        action_tokens = self.action_token* self.chunk_len #can't add " " between two tokens, otherwise will be tokenized to multiple tokens
+        action_tokens = self.action_token * self.chunk_len
         prompt_suffix = f" Please predict the next {self.chunk_len} robot actions: <action>{action_tokens}<action>."
         instructions = [instruction + prompt_suffix for instruction in instructions]
 
@@ -195,14 +228,21 @@ class Qwenvl_OFT(baseframework):
             # last_hidden_state: [B, seq_len, H]
             last_hidden = qwenvl_outputs.hidden_states[-1]   # [B, L, H]
 
-        # Step 4: Action Expert Forward and Loss
-        with torch.autocast("musa", dtype=torch.float32):
-            # 提取动作 token embedding 作为动作预测查询
-            input_ids = qwen_inputs.get("input_ids", None)
-            action_queries = self._gather_action_token_embeddings(last_hidden, input_ids, action_token_id=self.action_token_id)  # [B, chunk_len, H]
-            pred_actions = self.action_model.predict_action(action_queries)  # (B, chunk_len, action_dim)
+        # Step 4: Action Expert Forward
+        input_ids = qwen_inputs.get("input_ids", None)
+        if input_ids is None:
+            raise RuntimeError("Qwen processor did not return input_ids")
+        action_dtype = next(self.action_model.parameters()).dtype
+        action_queries = self._gather_action_token_embeddings(
+            last_hidden,
+            input_ids,
+            action_token_id=self.action_token_id,
+        ).to(dtype=action_dtype)
+        pred_actions = self.action_model.predict_action(action_queries)  # (B, chunk_len, action_dim)
 
-        normalized_actions = pred_actions.detach().cpu().numpy()
+        # NumPy has no BF16 dtype. Mixed-precision inference returns BF16
+        # actions on MUSA, so expose the framework's action result as FP32.
+        normalized_actions = pred_actions.detach().float().cpu().numpy()
         return {"normalized_actions": normalized_actions}
 
     def _gather_action_token_embeddings(
@@ -262,11 +302,43 @@ class Qwenvl_OFT(baseframework):
         action_queries = last_hidden.gather(dim=1, index=expanded_index)  # [B, chunk_len, H]
         return action_queries
 
+    @staticmethod
+    def _validate_action_token(tokenizer, action_token: str, chunk_len: int) -> int:
+        """Validate both one placeholder and its repeated prompt representation.
+
+        A token can encode to one id in isolation but be merged differently when
+        repeated by a BPE tokenizer. QwenOFT requires exactly ``chunk_len`` copies
+        of the same id because one hidden state is gathered for each action.
+        """
+        action_token_ids = tokenizer(action_token, add_special_tokens=False)["input_ids"]
+        if len(action_token_ids) != 1:
+            raise ValueError(
+                f"Action placeholder {action_token!r} must encode to exactly one token, "
+                f"but got token ids {action_token_ids}. Choose a single-token placeholder "
+                "for this tokenizer before training."
+            )
+
+        action_token_id = action_token_ids[0]
+        repeated_ids = tokenizer(
+            action_token * chunk_len,
+            add_special_tokens=False,
+        )["input_ids"]
+        expected_ids = [action_token_id] * chunk_len
+        if repeated_ids != expected_ids:
+            raise ValueError(
+                f"Repeated action placeholder {action_token!r} must encode to {chunk_len} "
+                f"copies of token id {action_token_id}, but got {len(repeated_ids)} ids: "
+                f"{repeated_ids}. Use a tokenizer-reserved placeholder such as "
+                "'<|fim_pad|>' for Qwen3.5."
+            )
+        return action_token_id
+
 
 if __name__ == "__main__":
-    from omegaconf import OmegaConf
-    import debugpy
     import argparse
+
+    import debugpy
+    from omegaconf import OmegaConf
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_oxe.yaml", help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
@@ -279,13 +351,13 @@ if __name__ == "__main__":
     cfg.framework.action_model.action_hidden_dim = 2048
 
     cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Florence-2-large"
-    
+
 
     # try get model
     model = Qwenvl_OFT(cfg)
     print(model)
 
-    # fake sample 
+    # fake sample
     image = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
     # Create a sample
     sample = {
@@ -317,7 +389,7 @@ if __name__ == "__main__":
 
     # try forward model
     # can be fake sample， but here get from dataloader for simpler
-    from starVLA.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
+    from starVLA.dataloader.lerobot_datasets import collate_fn, get_vla_dataset
 
     vla_dataset_cfg = cfg.datasets.vla_data
     dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
