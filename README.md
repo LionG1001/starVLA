@@ -1,21 +1,22 @@
 # StarVLA: A Lego-like Codebase for Vision-Language-Action Model Developing
+
 Collecting, integrating, and exploring cutting-edge technologies for generalist robots.
 
 <!-- [![Update](https://img.shields.io/badge/UPDATE-Scripts%20fixed%20%7C%20Packaging%20smoother-red?style=for-the-badge)](https://github.com/starVLA/starVLA) -->
-[![Model & Data on Hugging Face](https://img.shields.io/badge/HuggingFace-Model%20%26%20Data-orange?style=for-the-badge&logo=huggingface)](https://huggingface.co/StarVLA) [![WeChat](https://img.shields.io/badge/WeChat-加入讨论群-brightgreen?style=for-the-badge&logo=wechat)](https://github.com/starVLA/starVLA/issues/64#issuecomment-3715403845)
+
+[![Model & Data on Hugging Face](<https://img.shields.io/badge/HuggingFace-Model%20%26%20Data-orange?style=for-the-badge&logo=huggingface>)](https://huggingface.co/StarVLA) [![WeChat](https://img.shields.io/badge/WeChat-加入讨论群-brightgreen?style=for-the-badge&logo=wechat)](https://github.com/starVLA/starVLA/issues/64#issuecomment-3715403845)
 
 **[2026/03/29]** 🔥 Thanks to the [ABot-M0](https://github.com/amap-cvlab/ABot-Manipulation) team for providing the [pre-trained weights](https://www.modelscope.cn/models/amap_cvlab/ABot-M0-Pretrain). For `Qwen3-VL 4B`, you can reload the `qwen_vl_interface` module in various frameworks!
 
 **[2026/03/19]** 🔥 StarVLA now provides a complete real-robot development case with [Franka robot examples](https://github.com/starVLA/starVLA/pull/198)!
 
-**[2026/03/03]** 🔥 We now support [**Qwen3.5** as a backbone for VLA](https://github.com/starVLA/starVLA/pull/172) — the fastest integration in the community ⚡  
-With more model size options: **0.8B, 2B, 4B, and 9B**! Build your VLA flexibly on top of native multimodal models! 
+**[2026/03/03]** 🔥 We now support [**Qwen3.5** as a backbone for VLA](https://github.com/starVLA/starVLA/pull/172) — the fastest integration in the community ⚡
+With more model size options: **0.8B, 2B, 4B, and 9B**! Build your VLA flexibly on top of native multimodal models!
 
 **[2026/01/29]** 🔥 StarVLA [Training Efficiency Report](https://github.com/starVLA/starVLA/issues/158) & [Training Curves](https://github.com/starVLA/starVLA/issues/68) released!
 Training configs and efficiency benchmarks for community reference.
 
 **[2026/01/29]** Calvin benchmark experiments were conducted by the UNT team. For inquiries, please contact Zhijie Song (1600013008@pku.edu.cn) or Feng Yan (bphengyan@163.com).
-
 
 **[2025/12/25]** We've simultaneously established pipelines for [Behavior-1K](examples/Behavior), [RoboTwin 2.0](examples/Robotwin), and CALVIN. We'd love to collaborate and share baseline results for more benchs with the community!
 
@@ -28,10 +29,9 @@ Training configs and efficiency benchmarks for community reference.
 <details close>
 <summary><b> Historical Milestones </b></summary>
 
-**[2025/11/12]** We now support [Florence-2](https://github.com/anyantudre/Florence-2-Vision-Language-Model) as a smaller VLM for resource-constrained development. StarVLA can now run on a single A100 GPU. See the [🚀Train with a smaller VLM](#train-smaller-vlm) section for more details. 
+**[2025/11/12]** We now support [Florence-2](https://github.com/anyantudre/Florence-2-Vision-Language-Model) as a smaller VLM for resource-constrained development. StarVLA can now run on a single A100 GPU. See the [🚀Train with a smaller VLM](#train-smaller-vlm) section for more details.
 
-
-**[2025/10/30]:** We released the LIBERO Training & Evaluation README. Results are very promising. More detail are in [examples/LIBERO](examples/LIBERO). 
+**[2025/10/30]:** We released the LIBERO Training & Evaluation README. Results are very promising. More detail are in [examples/LIBERO](examples/LIBERO).
 
 **[2025/10/25]:** We fixed several script links and so everything is smoother now. Thanks to the community for the feedback.
 
@@ -41,8 +41,6 @@ Training configs and efficiency benchmarks for community reference.
 
 StarVLA is a modular and flexible codebase for developing Vision-Language Model (VLM) to Vision-Language-Action (VLA) models.
 In StarVLA (also a pun on “start VLA” ),  each functional component (model, data, trainer, config, evaluation, etc.) follows a top-down, intuitive separation and high cohesion and low coupling principle, which enabling plug-and-play design, rapid prototyping, and independent debugging.
-
-
 
 ![](assets/Framworks.png)
 *Modules with solid borders are supported; borderless ones are coming soon.
@@ -61,15 +59,13 @@ In StarVLA (also a pun on “start VLA” ),  each functional component (model, 
 
 ## 🔥 Key Features
 
-
-
 <details open>
 <summary><b>Various VLA Frameworks </b></summary>
 
-- [x] **Qwen-FAST**: Utilizes Qwen2.5-VL-3B with a fast tokenizer to autoregressively generate discrete action tokens conditioned on visual and linguistic inputs (in line with π₀-fast).
-- [x] **Qwen-OFT**: Combines Qwen2.5-VL-3B with an MLP action head to perform parallel decoding of continuous actions, regressed from the hidden states of predefined special action tokens (in line with OpenVLA-OFT/EO).
-- [x] **Qwen-PI**: Integrates the Flow-Matching (FM) action expert with Qwen2.5-VL-3B, adopting a diffusion-based approach for continuous action prediction (in line with π₀).
-- [x] **Qwen-GR00T**: Implements a dual-system VLA architecture, where Qwen2.5-VL-3B serves as System2 for high-level vision-language reasoning, while the Flow-Matching module acts as System1 for rapid action prediction (in line with GR00T).
+- [X] **Qwen-FAST**: Utilizes Qwen2.5-VL-3B with a fast tokenizer to autoregressively generate discrete action tokens conditioned on visual and linguistic inputs (in line with π₀-fast).
+- [X] **Qwen-OFT**: Combines Qwen2.5-VL-3B with an MLP action head to perform parallel decoding of continuous actions, regressed from the hidden states of predefined special action tokens (in line with OpenVLA-OFT/EO).
+- [X] **Qwen-PI**: Integrates the Flow-Matching (FM) action expert with Qwen2.5-VL-3B, adopting a diffusion-based approach for continuous action prediction (in line with π₀).
+- [X] **Qwen-GR00T**: Implements a dual-system VLA architecture, where Qwen2.5-VL-3B serves as System2 for high-level vision-language reasoning, while the Flow-Matching module acts as System1 for rapid action prediction (in line with GR00T).
 
 <details open>
 <summary><b> Results on SimplerEnv </b></summary>
@@ -79,7 +75,6 @@ In StarVLA (also a pun on “start VLA” ),  each functional component (model, 
 </p>
 
 </details>
-
 
 <details open>
 <summary><b> Results on RoboCasa GR1 </b></summary>
@@ -108,66 +103,61 @@ In StarVLA (also a pun on “start VLA” ),  each functional component (model, 
 
 </details>
 
-
-
 We have more results for RoboCasa, RoboTwin 2.0, Behavior-1k, Calvin. See our [🍀 Overleaf](https://www.overleaf.com/read/qqtwrnprctkf#d5bdce), which continuously presents our real-time experimental results.
 
-
-
-
-
 ### 📈 Model Zoo
+
 We release a series of modified models and finetuning checkpoints to facilitate reproduction and downstream use.
 
 #### ✅ Available Modified Models
 
-| Model | Description  | Link |
-|-------|-------------|------|
-| **Qwen2.5-VL-3B-Action** | Extend Qwen2.5-VL's vocabulary with Fast Tokens  | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen2.5-VL-3B-Instruct-Action) |
-| **Qwen3-VL-4B-Action** | Extend Qwen3-VL's vocabulary with Fast Tokens | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3-VL-4B-Instruct-Action) |
+| Model                          | Description                                     | Link                                                                           |
+| ------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------ |
+| **Qwen2.5-VL-3B-Action** | Extend Qwen2.5-VL's vocabulary with Fast Tokens | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen2.5-VL-3B-Instruct-Action) |
+| **Qwen3-VL-4B-Action**   | Extend Qwen3-VL's vocabulary with Fast Tokens   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3-VL-4B-Instruct-Action)   |
 
 #### ✅ Available Finetuning Checkpoints
-| Model | Description | WidowX | Link |
-|-------|-------------|------|------|
-| **QWen2.5-FAST-Bridge-RT-1** | Training on [Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 58.6 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-FAST-Bridge-RT-1) |
-| **QWen2.5-OFT-Bridge-RT-1** | Training on [Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 41.8 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-OFT-Bridge-RT-1) |
-| **QWen2.5-PI-Bridge-RT-1** | Training on [Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot)  | 62.5 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-FM-Bridge-RT-1) |
-| **QWen2.5-GR00T-Bridge-RT-1** | Training on [Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 63.6 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-PI-Bridge-RT-1) |
-| **QWen-GR00T-Bridge** | Training only on [Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) | 71.4 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-GR00T-Bridge) |
-| **QWen3VL-OFT-Bridge-RT-1** | Training on [Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 42.7 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3VL-OFT-Bridge-RT-1) |
-| **QWen3VL-GR00T-Bridge-RT-1** | Training on [Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 65.3 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3VL-GR00T-Bridge-RT-1) |
----
 
-
-| Model | Description | Avg. Length | Link |
-|-------|-------------|------|------|
-| **QWen2.5VL-GR00T-Calvin_D_D** | Training on [Calvin_D_D](https://github.com/EmbodiedAI-RoboTron/RoboTron-Mani/tree/lerobot/examples/calvin) | 3.786 | [🤗 Hugging Face](https://huggingface.co/Simplicissimus-S/StarVLA-QwenGR00T_Qwen2.5-VL-3B-Instruct-Action_calvin_D_D) |
+| Model                               | Description                                                                                                                                                                      | WidowX | Link                                                                       |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------- |
+| **QWen2.5-FAST-Bridge-RT-1**  | Training on[Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 58.6   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-FAST-Bridge-RT-1)     |
+| **QWen2.5-OFT-Bridge-RT-1**   | Training on[Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 41.8   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-OFT-Bridge-RT-1)      |
+| **QWen2.5-PI-Bridge-RT-1**    | Training on[Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 62.5   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-FM-Bridge-RT-1)       |
+| **QWen2.5-GR00T-Bridge-RT-1** | Training on[Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 63.6   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-PI-Bridge-RT-1)       |
+| **QWen-GR00T-Bridge**         | Training only on[Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot)                                                                                      | 71.4   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-GR00T-Bridge)         |
+| **QWen3VL-OFT-Bridge-RT-1**   | Training on[Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 42.7   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3VL-OFT-Bridge-RT-1)   |
+| **QWen3VL-GR00T-Bridge-RT-1** | Training on[Bridge](https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot) and [Fractal](https://huggingface.co/datasets/IPEC-COMMUNITY/fractal20220817_data_lerobot) | 65.3   | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3VL-GR00T-Bridge-RT-1) |
 
 ---
+
+| Model                                | Description                                                                                               | Avg. Length | Link                                                                                                                 |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------- |
+| **QWen2.5VL-GR00T-Calvin_D_D** | Training on[Calvin_D_D](https://github.com/EmbodiedAI-RoboTron/RoboTron-Mani/tree/lerobot/examples/calvin) | 3.786       | [🤗 Hugging Face](https://huggingface.co/Simplicissimus-S/StarVLA-QwenGR00T_Qwen2.5-VL-3B-Instruct-Action_calvin_D_D) |
+
+---
+
 </details>
 
 <details open>
 <summary><b>Various Simulation Benchmarks </b></summary>
 
-
-- [x] **SimplerEnV**
-- [x] **LIBERO**
-- [x] **LIBERO-plus**
-- [x] **Robocasa**
-- [x] **RoboTwin**
-- [x] **BEHAVIOR**
+- [X] **SimplerEnV**
+- [X] **LIBERO**
+- [X] **LIBERO-plus**
+- [X] **Robocasa**
+- [X] **RoboTwin**
+- [X] **BEHAVIOR**
 - [ ] **SO101**
-- [x] **Calvin** *See details in [`calvin_D_D`](examples/calvin)
+- [X] **Calvin** *See details in [`calvin_D_D`](examples/calvin)
 - [ ] **RLBench**
 
 </details>
 
-
 <details close>
 <summary><b> Various Training Strategies </b></summary>
 
-* [x] Single Imitation Learning
-* [x] Multimodal Multitasks Co-training
+* [X] Single Imitation Learning
+* [X] Multimodal Multitasks Co-training
 * [ ] Reinforcement Learning Adaption
 
 </details>
@@ -176,11 +166,170 @@ We release a series of modified models and finetuning checkpoints to facilitate 
 
 ## 🚀 Quick Start
 
+<details open>
+<summary><b>🔥 Quick Start on MUSA: Qwen3.5-4B + QwenOFT + RoboTwin</b></summary>
+
+This path has been validated with `torch_musa 2.7.1.post1`,
+`transformers 5.2.0`, DeepSpeed ZeRO-1, BF16, and MUSA X10000 devices.
+The commands below assume that the MUSA driver, `torch_musa`, and a
+MUSA-compatible DeepSpeed build are already provided by the container image.
+Do not let `pip` replace the platform's PyTorch, torch_musa, or Triton packages.
+
+### 1. Install StarVLA and the optional FLA fast path
+
+```bash
+cd /path/to/starVLA
+
+python -m pip install -r requirements.txt
+python -m pip install -e .
+
+# Optional, but required when STARVLA_QWEN35_FLA_FASTPATH=1. Keep the
+# platform-provided MUSA PyTorch and Triton stack unchanged.
+python -m pip install --no-deps \
+  fla-core==0.4.2 flash-linear-attention==0.4.2
+```
+
+If the image does not already contain a MUSA-enabled DeepSpeed, install the
+validated fork instead of the PyPI CUDA build:
+
+```bash
+git clone https://github.com/gliangMT/DeepSpeed.git third_party/DeepSpeed
+cd third_party/DeepSpeed
+
+DS_ACCELERATOR=musa \
+DS_BUILD_FUSED_ADAM=1 \
+DS_BUILD_CPU_ADAM=1 \
+DS_BUILD_CPU_ADAGRAD=1 \
+python setup.py develop
+
+cd ../..
+```
+
+Verify the active Python environment before launching multiple nodes:
+
+```bash
+python - <<'PY'
+import accelerate
+import deepspeed
+import torch
+import torch_musa
+import transformers
+from deepspeed.accelerator import get_accelerator
+
+print("torch:", torch.__version__)
+print("transformers:", transformers.__version__)
+print("MUSA available:", torch.musa.is_available())
+print("MUSA devices:", torch.musa.device_count())
+print("DeepSpeed accelerator:", get_accelerator().device_name())
+PY
+```
+
+### 2. Prepare the model and RoboTwin data
+
+The launcher automatically checks these common model locations:
+
+```text
+<repo>/models/Qwen3.5-4B
+/home/jd/gl_dev/models/Qwen3.5-4B
+/data/share/liang.geng/vla-project/models/Qwen3.5-4B
+```
+
+It also checks these RoboTwin data locations:
+
+```text
+<repo>/playground/Datasets/RoboTwin
+/home/jd/blake/starvla/playground/Datasets/RoboTwin
+/data/share/liang.geng/vla-project/playground/Datasets/RoboTwin
+```
+
+If your files are elsewhere, set only the paths that differ:
+
+```bash
+export BASE_VLM=/actual/path/to/Qwen3.5-4B
+export DATA_ROOT_DIR=/actual/path/to/RoboTwin
+```
+
+The model directory must contain the complete checkpoint, tokenizer, and
+processor files. The dataset directory must contain the extracted and
+preprocessed RoboTwin layout rather than only downloaded archives.
+
+### 3. Single-node launch
+
+On a standard eight-card MUSA worker using one of the paths above:
+
+```bash
+bash examples/Robotwin/train_files/run_robotwin_train_qwen3_5_musa.sh
+```
+
+Run a short smoke test before a long job:
+
+```bash
+MAX_TRAIN_STEPS=10 \
+SAVE_INTERVAL=1000 \
+EVAL_INTERVAL=1000 \
+bash examples/Robotwin/train_files/run_robotwin_train_qwen3_5_musa.sh
+```
+
+### 4. Multi-node launch
+
+Create a runtime hostfile with one participating host per line. `slots` is the
+number of local MUSA devices:
+
+```text
+10.121.32.16 slots=8
+10.121.32.17 slots=8
+10.121.32.18 slots=8
+10.121.32.20 slots=8
+```
+
+The hosts must be mutually reachable through SSH keys and must see the same
+code, model, dataset, and output directories. The hostfile is required; running
+`bash cluster/dist_run_qwen3_5.sh` without it returns an error.
+
+Launch the validated four-node configuration:
+
+```bash
+STARVLA_QWEN35_FLA_FASTPATH=1 \
+STARVLA_ALLOW_TF32=0 \
+bash cluster/dist_run_qwen3_5.sh /path/to/hostfile.runtime
+```
+
+Useful optional overrides include:
+
+```bash
+RUN_ID=my_qwen35_run \
+MAX_TRAIN_STEPS=150000 \
+SAVE_INTERVAL=10000 \
+EVAL_INTERVAL=1000 \
+GPU_PEAK_TFLOPS=460 \
+STARVLA_QWEN35_FLA_FASTPATH=1 \
+STARVLA_ALLOW_TF32=0 \
+bash cluster/dist_run_qwen3_5.sh /path/to/hostfile.runtime
+```
+
+`GPU_PEAK_TFLOPS` is the assumed dense BF16 peak of one device and is used
+only as the MFU denominator. Do not use sparse throughput or whole-machine
+throughput here.
+
+### 5. Monitor the job
+
+Rank 0 prints loss, per-device TFLOPs, step time, and rolling MFU:
+
+```bash
+tail -f /path/to/logs/log.0.<master-ip>
+```
+
+The SDPA-math baseline may print `Flash attention has been runtime disabled`;
+this is expected because the launcher intentionally prevents SDPA from
+selecting an unvalidated flash kernel. For backend design, MFU accounting,
+numerical validation, and troubleshooting, see
+[`docs/qwen3_5_musa_adaptation.md`](docs/qwen3_5_musa_adaptation.md).
+
+</details>
+
 <details close>
 <summary><b>🛠 Environment Setup
 </b></summary>
-
-
 
 ```bash
 # Clone the repo
@@ -200,7 +349,6 @@ pip install flash-attn --no-build-isolation
 pip install -e .
 ```
 
-
 ⚠️ **Common Issues**
 flash-attn can be tricky to install because it must match your system’s CUDA toolkit (nvcc) and PyTorch versions. The `--no-build-isolation` flag resolves most issues, but on newer systems you may need to manually choose a compatible flash-attn version. Ensure your CUDA driver/toolkit and torch versions are aligned. Check your environment:
 
@@ -219,13 +367,10 @@ We have verified that `flash-attn==2.7.4.post1` works well with nvcc versions `1
 <summary><b>👀 Quick Check StarVLA
 </b></summary>
 
-
-
 ```bash
 # check framework with fake examples
 python starVLA/model/framework/QwenGR00T.py
 ```
-
 
 You should download [Qwen3-VL-4B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct) and put it as `./playground/Pretrained_models/Qwen3-VL-4B-Instruct`. It should build successfully and `print(model)`. You can also call `model.forward(fake_data)` and obtain unnormalized actions via `model.predict_action(fake_data)`.
 
@@ -248,7 +393,7 @@ bash examples/LIBERO/eval_files/run_policy_server.sh &
 bash examples/LIBERO/eval_files/eval_libero.sh
 ```
 
-⚠️ **Common issue**  
+⚠️ **Common issue**
 If `NotImplementedError: Framework QwenGR00T is not implemented` appears, run `python starVLA/model/framework/QwenGR00T.py` to verify your environment.
 
 </details>
@@ -269,11 +414,11 @@ bash examples/LIBERO/train_files/run_libero_train.sh
 
 </details>
 
-
-
 ## 🌟 How does starVLA make model development Lego-like again?
+
 👇 StarVLA achieves “Lego-like” development via the following designs:
 <a id="model"></a>
+
 <details close>
 <summary><b>1. Smoke test any submodule </b></summary>
 
@@ -284,9 +429,10 @@ StarVLA emphasizes a modular model design. Each major framework file can be run 
 python starVLA/model/framework/QwenOFT.py --config_yaml starvla_cotrain_oxe.yaml
 # dataloader
 python starVLA/dataloader/lerobot_datasets.py --config_yaml starvla_cotrain_oxe.yaml
-
 ```
+
 Note: `starVLA/model/framework/yourframework.py` is the single external API surface of the model; it should mirror (be structurally isomorphic to) the framework diagram in your paper.
+
 </details>
 <a id="data"></a>
 <details close>
@@ -295,6 +441,7 @@ Note: `starVLA/model/framework/yourframework.py` is the single external API surf
 StarVLA follows top‑down decomposition and the principle of high cohesion & low coupling.
 
 For example:
+
 - Dataloader
   - Returns a raw, model‑agnostic dict only; no model‑specific preprocessing (e.g., tokenizer, image encoding).
   - A single sample should include (add/remove as needed):
@@ -304,6 +451,7 @@ For example:
     - state: Optional[np.ndarray[..., state_dim]]
 
 Both `framework.forward()` and `framework.predict_action()` operate directly on raw inputs, keeping train/test boundaries explicit and easy to hack.
+
 </details>
 <a id="config"></a>
 <details close>
@@ -314,12 +462,9 @@ Parameters are passed primarily via extensible dicts, allowing overrides and con
 
 </details>
 
-
 🧪 *To self‑test and iterate on StarVLA’s usability, we re‑implemented several representative VLA frameworks. Our have done a beta test: an internal developer can stand up a new VLA framework in under half a day (leat then 3 hours), and an new user can build their first custom VLA framework within a single day. More design insights for each item can be found in [assets/intro_v1.md](assets/intro_v1.md).*
 
-
 ---
-
 
 ## 📖 FAQ
 
@@ -334,14 +479,14 @@ A: We profiled it: data preprocessing takes <1% time. Keeping it inside the Fram
 <summary><b>Q: Can I use a backbone other than Qwen2.5-VL?</b></summary>
 
 A: Yes. Implement new vision + language modules and compose them inside a Framework; any other existing models can be swapped in. Yet, due to the framework processing raw action data, it is very easy to swap in.
+
 </details>
 
 <details close> <summary><b>Q: Why isn't there an abstract interface for the vision tower?</b></summary>
-  
+
 A: We believe that VLM will become the base model and will inherently possess its own native vision tower.
 
 </details>
-
 
 <details close>
 <summary><b>Q: Can I override or add parameters via the terminal?</b></summary>
@@ -349,6 +494,7 @@ A: We believe that VLM will become the base model and will inherently possess it
 A: Yes. We use OmegaConf.load(args.config_yaml) as the single configuration entry; standalone debugging also uses args.config_yaml. Parameters may be intentionally redundant; you can freely add or override them via the CLI.
 
 Examples:
+
 ```bash
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml  \
@@ -362,16 +508,17 @@ accelerate launch \
 
 ⚠️: `framework.action_model.new_module` only adds to the global config; its behavior is on your framework.
 
-
 </details>
 
 <details close>
 <summary><b>Q: Can I freeze the VLM via parameters?</b></summary>
 
 A: Yes. StarVLA uses a regex / name list to control freezing. Example:
+
 ```
 --trainer.freeze_modules "qwen_vl_interface.model.model.visual,dino_encoder" \
 ```
+
 Tips: You can ``print(your_model)`` first to check the relative paths of your modules and list them as comma-separated values.
 (implementation in `TrainerUtils.freeze_backbones`.)
 
@@ -381,6 +528,7 @@ Tips: You can ``print(your_model)`` first to check the relative paths of your mo
 <summary><b>Q: Can I set different learning rates for different modules?</b></summary>
 
 A: Yes, starVLA also uses name: value dict to control learning group. Config example:
+
 ```yaml
 trainer:
   learning_rate:
@@ -388,21 +536,25 @@ trainer:
     qwen_vl_interface: 1.0e-05
     action_model: 1.0e-04
 ```
+
 (Also referenced in `trainer_tools.build_param_lr_groups`.)
+
 </details>
 
 <details close>
 <summary><b>Q: Can I resume training from a checkpoint?</b></summary>
 
 A: Yes, somehow can. Specify the latest checkpoint path in `config.yaml`, e.g.:
+
 ```yaml
 trainer:
   pretrained_checkpoint: path_to_steps_10000.pt
   reload_modules: "action_model"
 ```
-Empty `reload_modules` means full load all model. However, starVLA does not save  `optimizer state`. It requires a lot of  memory/disk and bring limited benefit.
-</details>
 
+Empty `reload_modules` means full load all model. However, starVLA does not save  `optimizer state`. It requires a lot of  memory/disk and bring limited benefit.
+
+</details>
 
 <details id="train-smaller-vlm" close>
 <summary><b>🚀 Train with a smaller VLM</b></summary>
@@ -429,13 +581,9 @@ Note: To ensure better compatibility with already released checkpoints, we are c
 
 </details>
 
-
-
 ## ✍️ Citation & Copyright
 
-
 StarVLA is released under the MIT License, which permits commercial use, modification, distribution, and private use. Rebases are allowed for forks and feature branches; when rebasing from upstream StarVLA, use descriptive commit messages (e.g., "chore: rebase from StarVLA") and keep at least the two latest upstream commits as separate. See [License](LICENSE) for details.
-
 
 ```
 @misc{starvla2025,
@@ -452,36 +600,31 @@ StarVLA is released under the MIT License, which permits commercial use, modific
 }
 ```
 
-
 ## 🤝 Contributing
 
-
 1) If you find an issue, please open an Issue first. If it persists or needs clarification, start a Discussion and we’ll follow up.
-
 2) If you have ideas to improve StarVLA, feel free to open a PR. To make sure we will accept your effect, please align scope and design first via an Issue or by booking a short sync with this [Cooperation Form](https://forms.gle/R4VvgiVveULibTCCA).
-
 3) If you’re blocked or want to brainstorm, please fill out the [Cooperation Form](https://forms.gle/R4VvgiVveULibTCCA). We host office hours every Friday afternoon for live discussion.
 
 Tip: Before submitting a PR, run make check locally to pass formatting and lint.
 
+## 🙏 Acknowledgements
 
-##  🙏 Acknowledgements
-This project draws inspiration and references from several notable open-source initiatives, including:  
-- [LeRobot](https://github.com/huggingface/lerobot)  
-- [GR00T](https://github.com/NVIDIA/Isaac-GR00T/tree/main)  
-- [DeepSpeed](https://github.com/deepspeedai/DeepSpeed)  
-- [Qwen-VL](https://github.com/QwenLM/Qwen3-VL/tree/main)  
-- [InternVL](https://github.com/OpenGVLab/InternVL)  
+This project draws inspiration and references from several notable open-source initiatives, including:
+
+- [LeRobot](https://github.com/huggingface/lerobot)
+- [GR00T](https://github.com/NVIDIA/Isaac-GR00T/tree/main)
+- [DeepSpeed](https://github.com/deepspeedai/DeepSpeed)
+- [Qwen-VL](https://github.com/QwenLM/Qwen3-VL/tree/main)
+- [InternVL](https://github.com/OpenGVLab/InternVL)
 - [ABot-Manipulation](https://github.com/amap-cvlab/ABot-Manipulation)
 
 The codebase was originally forked from [InternVLA-M1](https://github.com/InternRobotics/InternVLA-M1).
 
-
-
 # Star History
+
 Here's how our community has grown over time:
 
 [![Star History Chart](https://api.star-history.com/svg?repos=starVLA/starVLA&type=date&legend=bottom-right)](https://www.star-history.com/#starVLA/starVLA&type=date&legend=bottom-right)
-
 
 <!-- *Chart updates automatically. Click to interact with the full timeline.* -->
