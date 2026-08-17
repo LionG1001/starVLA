@@ -27,6 +27,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "transformers==5.2.0",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,10 @@ dev = [
 sagemaker = [
     "boto3",
     "sagemaker"
+]
+musa-fla = [
+    "fla-core==0.4.2",
+    "flash-linear-attention==0.4.2",
 ]
 
 

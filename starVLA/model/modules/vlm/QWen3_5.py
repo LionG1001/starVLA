@@ -1,17 +1,19 @@
 # Copyright 2025 starVLA community. All rights reserved.
-# Licensed under the MIT License, Version 1.0 (the "License"); 
+# Licensed under the MIT License, Version 1.0 (the "License");
 # Implemented by [Shijie LIAN/ Huazhong University of Science & Technology] in [2026].
 # Design and Merged by [Jinhui YE / HKUST University] in [2026].
 
+from contextlib import nullcontext
+from typing import Optional
+
 import torch
-from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, Optional, List
-
-from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers import AutoProcessor, BatchFeature
-
-from qwen_vl_utils import process_vision_info
+import torch.nn as nn
 from accelerate.logging import get_logger
+from torch.nn.attention import SDPBackend, sdpa_kernel
+from transformers import AutoProcessor
+from transformers.modeling_outputs import CausalLMOutputWithPast
+
+from .qwen35_musa import configure_qwen35_musa_fla_path
 
 try:
     from transformers import Qwen3_5ForConditionalGeneration
@@ -32,7 +34,24 @@ _ACTION_TOKEN_MIN = 248077 # how can we know this range? check how you add fast 
 _ACTION_TOKEN_MAX = 248077 + 2047 # here only for fast_tokenizer, see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md
 
 
-import torch.nn as nn
+def _accelerator_autocast(dtype: torch.dtype):
+    """Select MUSA or CUDA autocast without misrouting the device string."""
+    if hasattr(torch, "musa") and torch.musa.is_available():
+        return torch.autocast(device_type="musa", dtype=dtype)
+    if torch.cuda.is_available():
+        return torch.autocast(device_type="cuda", dtype=dtype)
+    return nullcontext()
+
+
+def _sdpa_backend_context(attn_implementation: str, sdpa_backend: str):
+    """Optionally restrict SDPA to a known backend for this model call."""
+    if attn_implementation != "sdpa" or sdpa_backend == "auto":
+        return nullcontext()
+    if sdpa_backend == "math":
+        return sdpa_kernel(SDPBackend.MATH)
+    raise ValueError(
+        f"Unsupported SDPA backend {sdpa_backend!r}; expected 'auto' or 'math'."
+    )
 
 
 class _QWen3_5_VL_Interface(nn.Module):
@@ -50,28 +69,32 @@ class _QWen3_5_VL_Interface(nn.Module):
     def __init__(self, config: Optional[dict] = None, **kwargs):
         """
         Initialize the Qwen3.5-VL wrapper.
-        Following https://huggingface.co/Qwen/Qwen3.5-VL-4B-Instruct
+        Following https://huggingface.co/Qwen/Qwen3.5-4B
 
         """
         super().__init__()
 
         qwenvl_config = config.framework.get("qwenvl", {})
-        model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3.5-VL-4B-Instruct")
+        model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3.5-4B")
         attn_implementation = qwenvl_config.get("attn_implementation", "sdpa")
+        sdpa_backend = qwenvl_config.get("sdpa_backend", "auto")
 
         model = Qwen3_5ForConditionalGeneration.from_pretrained(
             model_id,
             attn_implementation=attn_implementation,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
+        self.musa_fla_linear_layers = configure_qwen35_musa_fla_path(model)
         processor = AutoProcessor.from_pretrained(model_id)
         processor.tokenizer.padding_side = "left"
 
         self.model = model
         self.processor = processor
         self.config = config
+        self.attn_implementation = attn_implementation
+        self.sdpa_backend = sdpa_backend
 
-        # alin qwen3.5 with qwen2.5
+        # Align the composite Qwen3.5 config with older VLM wrappers.
         self.model.config.hidden_size = self.model.config.text_config.hidden_size
 
         # only for fast base model
@@ -87,7 +110,14 @@ class _QWen3_5_VL_Interface(nn.Module):
         Forward pass delegating to underlying Qwen3.5-VL backbone.
         """
 
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        # QwenOFT trains from hidden states rather than autoregressive decoding:
+        # disable the KV cache and retain logits only for the final token to
+        # avoid allocating the full [batch, sequence, vocabulary] tensor.
+        kwargs.setdefault("use_cache", False)
+        kwargs.setdefault("logits_to_keep", 1)
+        with _sdpa_backend_context(
+            self.attn_implementation, self.sdpa_backend
+        ), _accelerator_autocast(torch.bfloat16):
             outputs = self.model(
                 **kwargs,
             )
@@ -106,7 +136,9 @@ class _QWen3_5_VL_Interface(nn.Module):
         Returns:
             GenerateOutput | Model-dependent generation return.
         """
-        with torch.autocast("cuda", dtype=torch.float16):
+        with _sdpa_backend_context(
+            self.attn_implementation, self.sdpa_backend
+        ), _accelerator_autocast(torch.bfloat16):
             generation_output = self.model.generate(
                 **kwargs,
             )
@@ -115,7 +147,7 @@ class _QWen3_5_VL_Interface(nn.Module):
     def build_qwenvl_inputs(self, images, instructions, solutions=None, **kwargs):
         """
         Build model inputs from raw data (images + instructions + optional solutions).
-        Follow Oficial Qwen3.5-VL Instruct format: https://huggingface.co/Qwen/Qwen3.5-VL-4B-Instruct
+        Follow the official Qwen3.5 format: https://huggingface.co/Qwen/Qwen3.5-4B
         """
 
         # Create messages: one message per sample
@@ -150,7 +182,7 @@ class _QWen3_5_VL_Interface(nn.Module):
         )
 
         # if solutions, mask out the solution tokens in labels
-        if solutions is not None: #  here only for fast_tokenizer now. 
+        if solutions is not None: #  here only for fast_tokenizer now.
             action_token_min = _ACTION_TOKEN_MIN # how can we know this range? --> we has other way for this, but is slower see qwenhelix branch
             action_token_max = _ACTION_TOKEN_MAX # here only for fast_tokenizer, see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md
             labels = batch_inputs['input_ids'].clone()
@@ -171,7 +203,7 @@ class _QWen3_5_VL_Interface(nn.Module):
                         "No action token found in sequence; please check action-tokenized tokenizer in "
                         "starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md"
                     )
-            
+
             labels[labels == self.processor.tokenizer.pad_token_id] = -100 ## mask out pad tokens as well
             batch_inputs['labels'] = labels
 
@@ -181,9 +213,10 @@ class _QWen3_5_VL_Interface(nn.Module):
 
 
 if __name__ == "__main__":
-    from omegaconf import OmegaConf
-    import debugpy
     import argparse
+
+    import debugpy
+    from omegaconf import OmegaConf
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_oxe.yaml", help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
@@ -193,7 +226,7 @@ if __name__ == "__main__":
     debugpy.wait_for_client()
 
     cfg = OmegaConf.load(args.config_yaml)
-    
-    cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Qwen3.5-VL-4B-Instruct"
+
+    cfg.framework.qwenvl.base_vlm = "./models/Qwen3.5-4B"
     qwen_vl = _QWen3_5_VL_Interface(cfg)
     pass

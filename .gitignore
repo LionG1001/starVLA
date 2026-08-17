@@ -1,2 +1,7 @@
 # MUSA/MCCL runtime error dumps
 .mccl_error*
+
+# Python-generated caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
