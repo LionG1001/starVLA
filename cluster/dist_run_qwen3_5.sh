@@ -2,6 +2,8 @@
 set -euo pipefail
 
 # Launch Qwen3.5 StarVLA training on every host in HOSTFILE.
+# This file only owns distributed orchestration. Model and training settings
+# belong to TRAIN_ENTRY and its YAML config, and are not injected here.
 # Usage:
 #   bash cluster/dist_run_qwen3_5.sh HOSTFILE \
 #     [--logdir LOG_DIR] [--output-dir OUTPUT_DIR] [--dry-run]
@@ -85,40 +87,17 @@ if ! [[ "${STARTUP_POLL_INTERVAL_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 MASTER_ADDR=${HOSTS[0]}
-BASE_VLM="${BASE_VLM:-/home/jd/gl_dev/models/Qwen3.5-4B}"
-CONFIG_YAML="${CONFIG_YAML:-${WORKDIR}/examples/Robotwin/train_files/starvla_cotrain_robotwin_qwen35_abs.yaml}"
-DATA_ROOT_DIR="${DATA_ROOT_DIR:-/home/jd/blake/starvla/playground/Datasets/RoboTwin}"
-DATA_MIX="${DATA_MIX:-robotwin_all_50}"
-RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_${DATA_MIX}_qwen3_5_sdpa_math_${NNODES}n}"
-PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-1}"
-MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-150000}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-10000}"
-LOGGING_FREQUENCY="${LOGGING_FREQUENCY:-1}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-1000}"
-# Native AdamW is the validated default for the current Qwen3.5/MUSA shape;
-# keep FusedAdamW as an explicit opt-in for version-specific A/B testing.
-STARVLA_ENABLE_FUSED_OPTIMIZER="${STARVLA_ENABLE_FUSED_OPTIMIZER:-0}"
-STARVLA_ALLOW_TF32="${STARVLA_ALLOW_TF32:-auto}"
-STARVLA_QWEN35_FLA_FASTPATH="${STARVLA_QWEN35_FLA_FASTPATH:-0}"
-WANDB_MODE="${WANDB_MODE:-disabled}"
-ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
-SDPA_BACKEND="${SDPA_BACKEND:-math}"
-GPU_PEAK_TFLOPS="${GPU_PEAK_TFLOPS:-460.0}"
-IS_RESUME="${IS_RESUME:-false}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_qwen3_5_${NNODES}n}"
 LOCAL_SIZE="${LOCAL_SIZE:-8}"
 
 echo "Number of nodes: ${NNODES}"
 echo "Master address: ${MASTER_ADDR}"
 echo "Run ID: ${RUN_ID}"
-echo "Attention backend: ${ATTN_IMPLEMENTATION}/${SDPA_BACKEND}"
-echo "TF32 policy: ${STARVLA_ALLOW_TF32}"
-echo "Experimental MUSA FLA fast path: ${STARVLA_QWEN35_FLA_FASTPATH}"
 echo "Logs: ${LOG_DIR}"
 echo "Checkpoints root: ${OUTPUT_DIR}"
 
 build_preflight_command() {
-  printf 'cd %q && test -f %q && test -d %q && test -f %q && test -d %q' \
-    "${WORKDIR}" "${TRAIN_ENTRY}" "${BASE_VLM}" "${CONFIG_YAML}" "${DATA_ROOT_DIR}"
+  printf 'cd %q && test -f %q' "${WORKDIR}" "${TRAIN_ENTRY}"
 }
 
 echo "Validating SSH access and shared paths on every node..."
@@ -164,14 +143,9 @@ echo "Main process port: ${MAIN_PROCESS_PORT}"
 build_remote_command() {
   local rank="$1"
   local log_file="$2"
-  printf 'cd %q && nohup env PYTHONUNBUFFERED=1 NNODES=%q NRANK=%q MASTER_ADDR=%q MAIN_PROCESS_PORT=%q OUTPUT_DIR=%q RUN_ID=%q BASE_VLM=%q CONFIG_YAML=%q DATA_ROOT_DIR=%q DATA_MIX=%q PER_DEVICE_BATCH_SIZE=%q MAX_TRAIN_STEPS=%q SAVE_INTERVAL=%q LOGGING_FREQUENCY=%q EVAL_INTERVAL=%q STARVLA_ENABLE_FUSED_OPTIMIZER=%q STARVLA_ALLOW_TF32=%q STARVLA_QWEN35_FLA_FASTPATH=%q WANDB_MODE=%q ATTN_IMPLEMENTATION=%q SDPA_BACKEND=%q GPU_PEAK_TFLOPS=%q IS_RESUME=%q LOCAL_SIZE=%q bash %q > %q 2>&1 < /dev/null &' \
+  printf 'cd %q && nohup env PYTHONUNBUFFERED=1 NNODES=%q NRANK=%q MASTER_ADDR=%q MAIN_PROCESS_PORT=%q OUTPUT_DIR=%q RUN_ID=%q LOCAL_SIZE=%q bash %q > %q 2>&1 < /dev/null &' \
     "${WORKDIR}" "${NNODES}" "${rank}" "${MASTER_ADDR}" "${MAIN_PROCESS_PORT}" \
-    "${OUTPUT_DIR}" "${RUN_ID}" "${BASE_VLM}" "${CONFIG_YAML}" "${DATA_ROOT_DIR}" \
-    "${DATA_MIX}" "${PER_DEVICE_BATCH_SIZE}" "${MAX_TRAIN_STEPS}" "${SAVE_INTERVAL}" \
-    "${LOGGING_FREQUENCY}" "${EVAL_INTERVAL}" "${STARVLA_ENABLE_FUSED_OPTIMIZER}" \
-    "${STARVLA_ALLOW_TF32}" "${STARVLA_QWEN35_FLA_FASTPATH}" "${WANDB_MODE}" \
-    "${ATTN_IMPLEMENTATION}" "${SDPA_BACKEND}" "${GPU_PEAK_TFLOPS}" "${IS_RESUME}" \
-    "${LOCAL_SIZE}" "${TRAIN_ENTRY}" "${log_file}"
+    "${OUTPUT_DIR}" "${RUN_ID}" "${LOCAL_SIZE}" "${TRAIN_ENTRY}" "${log_file}"
 }
 
 if ((DRY_RUN == 1)); then

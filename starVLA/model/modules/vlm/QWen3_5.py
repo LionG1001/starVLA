@@ -14,6 +14,7 @@ from transformers import AutoProcessor
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .qwen35_musa import configure_qwen35_musa_fla_path
+from .qwen35_musa_flash_attention import resolve_qwen35_attention_implementation
 
 try:
     from transformers import Qwen3_5ForConditionalGeneration
@@ -49,8 +50,10 @@ def _sdpa_backend_context(attn_implementation: str, sdpa_backend: str):
         return nullcontext()
     if sdpa_backend == "math":
         return sdpa_kernel(SDPBackend.MATH)
+    if sdpa_backend == "flash":
+        return sdpa_kernel(SDPBackend.FLASH_ATTENTION)
     raise ValueError(
-        f"Unsupported SDPA backend {sdpa_backend!r}; expected 'auto' or 'math'."
+        f"Unsupported SDPA backend {sdpa_backend!r}; expected 'auto', 'math', or 'flash'."
     )
 
 
@@ -76,7 +79,10 @@ class _QWen3_5_VL_Interface(nn.Module):
 
         qwenvl_config = config.framework.get("qwenvl", {})
         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3.5-4B")
-        attn_implementation = qwenvl_config.get("attn_implementation", "sdpa")
+        requested_attn_implementation = qwenvl_config.get("attn_implementation", "sdpa")
+        attn_implementation = resolve_qwen35_attention_implementation(
+            requested_attn_implementation
+        )
         sdpa_backend = qwenvl_config.get("sdpa_backend", "auto")
 
         model = Qwen3_5ForConditionalGeneration.from_pretrained(
@@ -92,6 +98,7 @@ class _QWen3_5_VL_Interface(nn.Module):
         self.processor = processor
         self.config = config
         self.attn_implementation = attn_implementation
+        self.requested_attn_implementation = requested_attn_implementation
         self.sdpa_backend = sdpa_backend
 
         # Align the composite Qwen3.5 config with older VLM wrappers.

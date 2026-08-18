@@ -19,6 +19,9 @@ export MUSA_LAUNCH_BLOCKING="${MUSA_LAUNCH_BLOCKING:-0}"
 export MUSA_DEVICE_MAX_CONNECTIONS="${MUSA_DEVICE_MAX_CONNECTIONS:-1}"
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 export MUSA_EXECUTION_TIMEOUT="${MUSA_EXECUTION_TIMEOUT:-3200000}"
+# Variable-length batches can fragment reserved memory. Expand allocator
+# segments instead of retaining many unusable fragments between steps.
+export PYTORCH_MUSA_ALLOC_CONF="${PYTORCH_MUSA_ALLOC_CONF:-expandable_segments:True}"
 export MCCL_CROSS_NIC="${MCCL_CROSS_NIC:-0}"
 export MCCL_SOCKET_IFNAME="${MCCL_SOCKET_IFNAME:-bond0}"
 # On the validated MTT S5000/torch_musa stack, the native AdamW path is
@@ -29,8 +32,9 @@ export STARVLA_PYAV_THREADS="${STARVLA_PYAV_THREADS:-1}"
 # auto preserves the framework defaults. Set 0 for the Qwen3.5 RoPE TF32
 # isolation run so every Accelerate/DeepSpeed rank uses full FP32 matmul.
 export STARVLA_ALLOW_TF32="${STARVLA_ALLOW_TF32:-0}"
-# FLA is opt-in until its numerical and performance baselines are validated.
-export STARVLA_QWEN35_FLA_FASTPATH="${STARVLA_QWEN35_FLA_FASTPATH:-1}"
+# Keep the eager baseline free of experimental FLA kernels. Enable this only
+# for an explicit A/B after the baseline has passed numerical validation.
+export STARVLA_QWEN35_FLA_FASTPATH="${STARVLA_QWEN35_FLA_FASTPATH:-0}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -53,9 +57,12 @@ FREEZE_MODULE_LIST="${FREEZE_MODULE_LIST:-}"
 CONFIG_YAML="${CONFIG_YAML:-${REPO_ROOT}/examples/Robotwin/train_files/starvla_cotrain_robotwin_qwen35_abs.yaml}"
 RUN_ROOT_DIR="${RUN_ROOT_DIR:-${OUTPUT_DIR:-${REPO_ROOT}/results/Checkpoints}}"
 DATA_MIX="${DATA_MIX:-robotwin_all_50}"
-RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_${DATA_MIX}_qwen3_5_sdpa_math}"
-ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
-SDPA_BACKEND="${SDPA_BACKEND:-math}"
+PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-4}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_${DATA_MIX}_qwen3_5_eager}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-eager}"
+# Ignored by eager; retain auto so switching ATTN_IMPLEMENTATION=sdpa does not
+# silently force a backend without an explicit SDPA_BACKEND A/B setting.
+SDPA_BACKEND="${SDPA_BACKEND:-auto}"
 GPU_PEAK_TFLOPS="${GPU_PEAK_TFLOPS:-460.0}"
 
 select_existing_directory() {
@@ -100,8 +107,8 @@ if [[ ! -d "${DATA_ROOT_DIR}" ]]; then
   echo "Error: RoboTwin dataset directory does not exist: ${DATA_ROOT_DIR}" >&2
   exit 1
 fi
-if [[ "${ATTN_IMPLEMENTATION}" != "sdpa" || "${SDPA_BACKEND}" != "math" ]]; then
-  echo "Warning: this entry is validated with SDPA math, but received ${ATTN_IMPLEMENTATION}/${SDPA_BACKEND}." >&2
+if [[ "${ATTN_IMPLEMENTATION}" != "eager" ]]; then
+  echo "Warning: the configured baseline uses eager attention, but received ${ATTN_IMPLEMENTATION}/${SDPA_BACKEND}." >&2
 fi
 
 OUTPUT_PATH="${RUN_ROOT_DIR}/${RUN_ID}"
@@ -157,7 +164,7 @@ echo "Run output: ${OUTPUT_PATH}"
   --framework.qwenvl.attn_implementation "${ATTN_IMPLEMENTATION}" \
   --framework.qwenvl.sdpa_backend "${SDPA_BACKEND}" \
   --datasets.vla_data.data_root_dir "${DATA_ROOT_DIR}" \
-  --datasets.vla_data.per_device_batch_size "${PER_DEVICE_BATCH_SIZE:-1}" \
+  --datasets.vla_data.per_device_batch_size "${PER_DEVICE_BATCH_SIZE}" \
   --datasets.vla_data.data_mix "${DATA_MIX}" \
   --trainer.freeze_modules "${FREEZE_MODULE_LIST}" \
   --trainer.max_train_steps "${MAX_TRAIN_STEPS:-150000}" \

@@ -40,6 +40,7 @@ from starVLA.training.mfu import (
     QWEN35_MFU_FORMULA_VERSION,
     Qwen35BatchFlopShape,
     Qwen35ModelFlopConfig,
+    calculate_per_device_mfu,
     estimate_qwen35_training_flops,
 )
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
@@ -558,19 +559,25 @@ class VLATrainer(TrainerUtils):
             if "estimated_tflops_per_device_step" in metrics and "model_time" in metrics:
                 model_tflops = metrics["estimated_tflops_per_device_step"]
                 model_time = metrics["model_time"]
-                achieved_tflops = model_tflops / model_time if model_time > 0 else 0
-                mfu_percent = (achieved_tflops / self.gpu_peak_tflops) * 100
-                metrics["achieved_tflops_per_device"] = achieved_tflops
+                current_mfu = calculate_per_device_mfu(
+                    model_tflops,
+                    model_time,
+                    self.gpu_peak_tflops,
+                )
+                metrics.update(current_mfu)
                 metrics["peak_tflops_per_device"] = self.gpu_peak_tflops
-                metrics["mfu_percent"] = mfu_percent
                 if self._mfu_window:
                     window_tflops = sum(item[0] for item in self._mfu_window)
                     window_time = sum(item[1] for item in self._mfu_window)
-                    rolling_tflops = window_tflops / window_time
-                    metrics["achieved_tflops_per_device_rolling"] = rolling_tflops
-                    metrics["mfu_percent_rolling"] = (
-                        rolling_tflops / self.gpu_peak_tflops * 100
+                    rolling_mfu = calculate_per_device_mfu(
+                        window_tflops,
+                        window_time,
+                        self.gpu_peak_tflops,
                     )
+                    metrics["achieved_tflops_per_device_rolling"] = rolling_mfu[
+                        "achieved_tflops_per_device"
+                    ]
+                    metrics["mfu_percent_rolling"] = rolling_mfu["mfu_percent"]
                     metrics["mfu_window_steps"] = len(self._mfu_window)
 
             log_msg = f"Step {self.completed_steps}, Loss: {metrics}"
