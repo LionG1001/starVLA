@@ -15,6 +15,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .qwen35_musa import configure_qwen35_musa_fla_path
 from .qwen35_musa_flash_attention import resolve_qwen35_attention_implementation
+from .qwen35_musa_vision_patch import configure_qwen35_musa_vision_patch_path
 
 try:
     from transformers import Qwen3_5ForConditionalGeneration
@@ -89,6 +90,9 @@ class _QWen3_5_VL_Interface(nn.Module):
             model_id,
             attn_implementation=attn_implementation,
             dtype=torch.bfloat16,
+        )
+        self.musa_vision_patch_linear_layers = (
+            configure_qwen35_musa_vision_patch_path(model, qwenvl_config)
         )
         self.musa_fla_linear_layers = configure_qwen35_musa_fla_path(
             model, qwenvl_config

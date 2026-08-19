@@ -22,6 +22,10 @@ framework:
     sdpa_backend: auto
     # FLA 线性注意力 fast path 已通过数值、三轮端到端和长稳门禁，优化配置默认开启。
     musa_fla_fastpath: true
+    # Vision PatchEmbed 的 Conv3D→Linear 在真实 shape 上快约 48 倍；
+    # 同代码 4 机配对训练改善约 0.64%。该低风险等价替换默认开启，
+    # 设为 false 可立即回退原 Conv3D；参数和 state_dict 保持不变。
+    musa_vision_patch_linear_fastpath: true
     # Qwen3.5 会把原占位符 🔍 拆成 3 个 token。<|fim_pad|> 是官方
     # tokenizer 中的保留单 token；代码启动时还会验证连续重复后不被 BPE 合并。
     action_token: "<|fim_pad|>"
@@ -92,6 +96,7 @@ datasets:
 
 trainer:
   # 单卡 BF16 稠密理论峰值假设，仅作为 MFU 分母，不会自动探测。
+  # S5000 的 1000 TFLOPS 是 FP8 口径；本 BF16 训练继续使用 460 TFLOPS。
   # 不要误用稀疏算力或整机总算力；可通过启动脚本 GPU_PEAK_TFLOPS 覆盖。
   gpu_peak_tflops: 460.0
   # 跳过冷启动后，使用最近 20 个 step 的累计 FLOPs/累计耗时打印稳态 MFU。
