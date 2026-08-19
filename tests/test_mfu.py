@@ -4,6 +4,7 @@ from starVLA.training.mfu import (
     QWEN35_MFU_FORMULA_VERSION,
     Qwen35BatchFlopShape,
     Qwen35ModelFlopConfig,
+    calculate_per_device_mfu,
     estimate_qwen35_training_flops,
 )
 
@@ -55,6 +56,22 @@ class Qwen35MFUTest(unittest.TestCase):
             + result["estimated_vision_tflops_per_device_step"]
             + result["estimated_action_tflops_per_device_step"],
         )
+
+    def test_reference_shape_mfu_hand_calculation(self):
+        result = calculate_per_device_mfu(
+            estimated_tflops_per_device_step=7.854160770152,
+            model_time_seconds=0.5,
+            peak_tflops_per_device=460.0,
+        )
+
+        self.assertAlmostEqual(result["achieved_tflops_per_device"], 15.708321540304)
+        self.assertAlmostEqual(result["mfu_percent"], 3.414852508761739)
+
+    def test_mfu_rejects_non_positive_time_and_peak(self):
+        with self.assertRaisesRegex(ValueError, "model_time_seconds"):
+            calculate_per_device_mfu(7.85, 0.0, 460.0)
+        with self.assertRaisesRegex(ValueError, "peak_tflops_per_device"):
+            calculate_per_device_mfu(7.85, 0.5, 0.0)
 
     def test_batch_scaling_uses_local_device_shapes(self):
         one = estimate_qwen35_training_flops(

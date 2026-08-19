@@ -53,6 +53,27 @@ def _require_non_negative(name: str, value: int) -> None:
         raise ValueError(f"{name} must be non-negative, got {value}")
 
 
+def calculate_per_device_mfu(
+    estimated_tflops_per_device_step: float,
+    model_time_seconds: float,
+    peak_tflops_per_device: float,
+) -> dict[str, float]:
+    """Convert useful per-device step FLOPs and time into throughput and MFU."""
+
+    if estimated_tflops_per_device_step < 0:
+        raise ValueError("estimated_tflops_per_device_step must be non-negative")
+    if model_time_seconds <= 0:
+        raise ValueError("model_time_seconds must be positive")
+    if peak_tflops_per_device <= 0:
+        raise ValueError("peak_tflops_per_device must be positive")
+
+    achieved_tflops = estimated_tflops_per_device_step / model_time_seconds
+    return {
+        "achieved_tflops_per_device": achieved_tflops,
+        "mfu_percent": achieved_tflops / peak_tflops_per_device * 100,
+    }
+
+
 def estimate_qwen35_training_flops(
     model: Qwen35ModelFlopConfig,
     batch: Qwen35BatchFlopShape,

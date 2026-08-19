@@ -14,10 +14,14 @@ framework:
     base_vlm: /data/share/liang.geng/vla-project/models/Qwen3.5-4B
     # 显式声明模型类型，避免自定义权重目录名不含“qwen3.5”时注册失败。
     model_type: qwen3_5
-    # Qwen3.5 的 head_dim=256 当前不满足 MUSA FlashAttention 约束；显式固定 SDPA math，
-    # 避免自动后端选择反复尝试 flash。后续验证新版 FlashAttention 后可改为 auto。
-    attn_implementation: sdpa
-    sdpa_backend: math
+    # 这是 Qwen3.5 bs=4 性能优化的 attention 唯一配置源。基线固定使用 eager：
+    # 它走 Transformers 显式注意力计算，不进入 PyTorch SDPA Flash/Math，
+    # 也不进入 Mate/TileLang varlen adapter。基线启动脚本会校验该值。
+    attn_implementation: eager
+    # eager 路径不会读取该选项；保留 auto 仅用于完整记录配置。
+    sdpa_backend: auto
+    # FLA 线性注意力 fast path 已通过数值、三轮端到端和长稳门禁，优化配置默认开启。
+    musa_fla_fastpath: true
     # Qwen3.5 会把原占位符 🔍 拆成 3 个 token。<|fim_pad|> 是官方
     # tokenizer 中的保留单 token；代码启动时还会验证连续重复后不被 BPE 合并。
     action_token: "<|fim_pad|>"
@@ -75,8 +79,13 @@ datasets:
     action_mode: abs
     sequential_step_sampling: false
     default_image_resolution: [3, 224, 224]
-    per_device_batch_size: 1
+    per_device_batch_size: 4
     load_all_data_for_training: true
+    # bs=4 + FLA 后数据准备约占总 step 的 10%；用 4 个持久 worker 预取下一批。
+    num_workers: 4
+    prefetch_factor: 2
+    persistent_workers: true
+    pin_memory: false
     obs: ["image_0"]
     image_size: [224, 224]
     video_backend: pyav
@@ -116,9 +125,9 @@ trainer:
     betas: [0.9, 0.95]
     eps: 1.0e-08
     weight_decay: 1.0e-08
-    # true：MUSA 上优先使用 torch_musa FusedAdamW，减少逐张量算子启动；不可用时自动回退 AdamW。
-    # 排查精度或进行性能 A/B 时可设为 false。
-    fused: true
+    # 当前 MTT S5000/torch_musa 版本上，Qwen3.5 的 native AdamW 比
+    # FusedAdamW 更快；FusedAdamW 保留为显式 A/B 选项。
+    fused: false
   is_resume: false
   resume_epoch: null
   resume_step: null
