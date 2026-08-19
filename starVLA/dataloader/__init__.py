@@ -10,6 +10,32 @@ from starVLA.dataloader.vlm_datasets import make_vlm_dataloader
 
 logger = get_logger(__name__)
 
+
+def _vla_dataloader_kwargs(vla_data_cfg):
+    """Build safe DataLoader worker options from the VLA YAML section."""
+    num_workers = int(getattr(vla_data_cfg, "num_workers", 0))
+    if num_workers < 0:
+        raise ValueError("datasets.vla_data.num_workers must be non-negative")
+
+    kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": bool(getattr(vla_data_cfg, "pin_memory", False)),
+    }
+    if num_workers > 0:
+        prefetch_factor = int(getattr(vla_data_cfg, "prefetch_factor", 2))
+        if prefetch_factor < 1:
+            raise ValueError(
+                "datasets.vla_data.prefetch_factor must be positive when workers are enabled"
+            )
+        kwargs.update(
+            prefetch_factor=prefetch_factor,
+            persistent_workers=bool(
+                getattr(vla_data_cfg, "persistent_workers", True)
+            ),
+        )
+    return kwargs
+
+
 def save_dataset_statistics(dataset_statistics, run_dir):
     """Saves a `dataset_statistics.json` file."""
     out_path = run_dir / "dataset_statistics.json"
@@ -41,13 +67,15 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
 
         vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
         
+        dataloader_kwargs = _vla_dataloader_kwargs(vla_dataset_cfg)
         vla_train_dataloader = DataLoader(
             vla_dataset,
             batch_size=cfg.datasets.vla_data.per_device_batch_size,
             collate_fn=collate_fn,
-            num_workers=0,
+            **dataloader_kwargs,
             # shuffle=True
-        )        
+        )
+        logger.info("VLA DataLoader options: %s", dataloader_kwargs)
         if dist.get_rank() == 0: 
             
             output_dir = Path(cfg.output_dir)
