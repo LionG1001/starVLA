@@ -66,7 +66,11 @@ def _fla_causal_conv_adapter(fla_causal_conv1d):
             backend="triton",
             **kwargs,
         )
-        return output.transpose(1, 2).contiguous()
+        # Qwen3_5GatedDeltaNet immediately transposes this [B, D, T] result
+        # back to [B, T, D] before splitting Q/K/V. Keep the intermediate as
+        # a view: materializing it here copies roughly 19 MiB per layer for
+        # the bs=4, T=291, D=8192 training shape, only to transpose it back.
+        return output.transpose(1, 2)
 
     return causal_conv1d_fn
 
