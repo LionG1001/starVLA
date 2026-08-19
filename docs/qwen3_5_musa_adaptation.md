@@ -203,10 +203,11 @@ DeepSpeed 配置为 BF16 + ZeRO-1。ZeRO-1 主要切分 optimizer state，参数
 Optimizer 开关：
 
 ```text
+# 默认值：0；显式设置为 1 才启用 FusedAdamW
 STARVLA_ENABLE_FUSED_OPTIMIZER=1
 ```
 
-当开关为 1 且 MUSA 可用时，代码尝试 `torch_musa.optim.FusedAdamW`；导入失败时记录 warning 并回退到 `torch.optim.AdamW`。Fused 版通常减少 optimizer 阶段的短算子启动，但并不自动代表端到端更快，仍需要用相同 batch/shape 做 A/B。
+当开关为 1 且 MUSA 可用时，代码尝试 `torch_musa.optim.FusedAdamW`；导入失败时记录 warning 并回退到 `torch.optim.AdamW`。在当前 MTT S5000、torch 2.7.1.post1、Transformers 5.2.0 的 4 节点 Qwen3.5 配置中，固定 `sdpa/math`、TF32=0、FLA=1 做 6 step A/B，native AdamW 的稳态 `model_time` 为 0.498 s，FusedAdamW 为 0.635 s；因此当前入口默认关闭 fused。升级 torch_musa、驱动或改变 shape/拓扑后必须重新 A/B，不能仅凭算子名称判断端到端收益。
 
 ## 9. MFU 估算与“为什么很低”
 

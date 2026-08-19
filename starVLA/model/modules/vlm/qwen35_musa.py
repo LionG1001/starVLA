@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -14,8 +14,16 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
 
-def _setting(name: str, default: str) -> str:
-    value = os.getenv(name, default).strip().lower()
+def _setting(value: Any, *, name: str) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, int) and value in (0, 1):
+        return "on" if value else "off"
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{name} must be one of auto/1/0/true/false/on/off, but got {value!r}."
+        )
+    value = value.strip().lower()
     if value in _TRUE_VALUES:
         return "on"
     if value in _FALSE_VALUES:
@@ -79,7 +87,7 @@ def install_qwen35_musa_fla_training_fastpath(model: nn.Module) -> int:
         )
     except ImportError as exc:
         raise RuntimeError(
-            "STARVLA_QWEN35_FLA_FASTPATH=1 requires fla-core and "
+            "framework.qwenvl.musa_fla_fastpath=true requires fla-core and "
             "flash-linear-attention. Install the validated wheels without "
             "replacing the MUSA torch/Triton stack."
         ) from exc
@@ -170,18 +178,22 @@ def disable_qwen35_musa_fla_fastpath(model: nn.Module) -> int:
     return rebound
 
 
-def configure_qwen35_musa_fla_path(model: nn.Module) -> int:
+def configure_qwen35_musa_fla_path(model: nn.Module, qwenvl_config: Any) -> int:
     """Apply the requested Qwen3.5 FLA policy on MUSA.
 
     ``0`` forces the reference path, ``1`` requires StarVLA's validated FLA
     adapter, and ``auto`` leaves Transformers' import-time selection intact.
     CUDA and CPU behavior is intentionally left to Transformers.
     """
-    setting = _setting("STARVLA_QWEN35_FLA_FASTPATH", "off")
+    setting = _setting(
+        qwenvl_config.get("musa_fla_fastpath", False),
+        name="framework.qwenvl.musa_fla_fastpath",
+    )
     if not _musa_is_available():
         if setting == "on":
             raise RuntimeError(
-                "STARVLA_QWEN35_FLA_FASTPATH=1 was requested, but MUSA is unavailable."
+                "framework.qwenvl.musa_fla_fastpath=true was requested, "
+                "but MUSA is unavailable."
             )
         return 0
     if setting == "on":

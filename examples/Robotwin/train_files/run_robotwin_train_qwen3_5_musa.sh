@@ -19,15 +19,19 @@ export MUSA_LAUNCH_BLOCKING="${MUSA_LAUNCH_BLOCKING:-0}"
 export MUSA_DEVICE_MAX_CONNECTIONS="${MUSA_DEVICE_MAX_CONNECTIONS:-1}"
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 export MUSA_EXECUTION_TIMEOUT="${MUSA_EXECUTION_TIMEOUT:-3200000}"
+# Variable-length batches can fragment reserved memory. Expand allocator
+# segments instead of retaining many unusable fragments between steps.
+export PYTORCH_MUSA_ALLOC_CONF="${PYTORCH_MUSA_ALLOC_CONF:-expandable_segments:True}"
 export MCCL_CROSS_NIC="${MCCL_CROSS_NIC:-0}"
 export MCCL_SOCKET_IFNAME="${MCCL_SOCKET_IFNAME:-bond0}"
-export STARVLA_ENABLE_FUSED_OPTIMIZER="${STARVLA_ENABLE_FUSED_OPTIMIZER:-1}"
+# On the validated MTT S5000/torch_musa stack, the native AdamW path is
+# faster for this Qwen3.5 shape. Set STARVLA_ENABLE_FUSED_OPTIMIZER=1 only
+# for an explicit A/B or on a stack where FusedAdamW has been revalidated.
+export STARVLA_ENABLE_FUSED_OPTIMIZER="${STARVLA_ENABLE_FUSED_OPTIMIZER:-0}"
 export STARVLA_PYAV_THREADS="${STARVLA_PYAV_THREADS:-1}"
 # auto preserves the framework defaults. Set 0 for the Qwen3.5 RoPE TF32
 # isolation run so every Accelerate/DeepSpeed rank uses full FP32 matmul.
 export STARVLA_ALLOW_TF32="${STARVLA_ALLOW_TF32:-0}"
-# FLA is opt-in until its numerical and performance baselines are validated.
-export STARVLA_QWEN35_FLA_FASTPATH="${STARVLA_QWEN35_FLA_FASTPATH:-1}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -50,9 +54,8 @@ FREEZE_MODULE_LIST="${FREEZE_MODULE_LIST:-}"
 CONFIG_YAML="${CONFIG_YAML:-${REPO_ROOT}/examples/Robotwin/train_files/starvla_cotrain_robotwin_qwen35_abs.yaml}"
 RUN_ROOT_DIR="${RUN_ROOT_DIR:-${OUTPUT_DIR:-${REPO_ROOT}/results/Checkpoints}}"
 DATA_MIX="${DATA_MIX:-robotwin_all_50}"
-RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_${DATA_MIX}_qwen3_5_sdpa_math}"
-ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
-SDPA_BACKEND="${SDPA_BACKEND:-math}"
+PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-4}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_${DATA_MIX}_qwen3_5_bs4_eager}"
 GPU_PEAK_TFLOPS="${GPU_PEAK_TFLOPS:-460.0}"
 
 select_existing_directory() {
@@ -97,13 +100,11 @@ if [[ ! -d "${DATA_ROOT_DIR}" ]]; then
   echo "Error: RoboTwin dataset directory does not exist: ${DATA_ROOT_DIR}" >&2
   exit 1
 fi
-if [[ "${ATTN_IMPLEMENTATION}" != "sdpa" || "${SDPA_BACKEND}" != "math" ]]; then
-  echo "Warning: this entry is validated with SDPA math, but received ${ATTN_IMPLEMENTATION}/${SDPA_BACKEND}." >&2
-fi
 
 OUTPUT_PATH="${RUN_ROOT_DIR}/${RUN_ID}"
 mkdir -p "${OUTPUT_PATH}"
 cp "${BASH_SOURCE[0]}" "${OUTPUT_PATH}/"
+cp "${CONFIG_YAML}" "${OUTPUT_PATH}/resolved_training_config.yaml"
 export STARVLA_PROFILE_DIR="${STARVLA_PROFILE_DIR:-${OUTPUT_PATH}/traces}"
 
 NNODES="${NNODES:-1}"
@@ -121,20 +122,64 @@ else
   PYTHON_BIN=$(command -v python)
 fi
 
-case "${STARVLA_QWEN35_FLA_FASTPATH,,}" in
-  1|true|yes|on)
-    if ! "${PYTHON_BIN}" -c 'import fla' >/dev/null 2>&1; then
-      echo "Error: STARVLA_QWEN35_FLA_FASTPATH=1 requires fla-core and flash-linear-attention." >&2
-      echo "Install the validated 0.4.2 packages without replacing the MUSA torch/Triton stack." >&2
-      exit 1
-    fi
-    ;;
-esac
+# Attention selection has a single source of truth: CONFIG_YAML. Do not accept
+# ATTN_IMPLEMENTATION/SDPA_BACKEND environment variables or CLI overrides here.
+# This baseline launcher fails early if the selected YAML is no longer eager.
+QWEN_CONFIG_SUMMARY=$(
+  "${PYTHON_BIN}" - "${CONFIG_YAML}" <<'PY'
+import sys
+
+import yaml
+
+config_path = sys.argv[1]
+with open(config_path, encoding="utf-8") as config_file:
+    config = yaml.safe_load(config_file)
+
+qwenvl = config.get("framework", {}).get("qwenvl", {})
+attn_implementation = qwenvl.get("attn_implementation")
+sdpa_backend = qwenvl.get("sdpa_backend", "auto")
+if attn_implementation != "eager":
+    raise SystemExit(
+        "Error: the Qwen3.5 baseline launcher requires "
+        f"framework.qwenvl.attn_implementation=eager in {config_path}; "
+        f"found {attn_implementation!r}."
+    )
+fastpath_switches = ("musa_fla_fastpath",)
+
+
+def config_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise SystemExit(f"Error: fast-path switch must be boolean, got {value!r}.")
+
+
+switch_summary = " ".join(
+    f"{name}={str(config_bool(qwenvl.get(name, False))).lower()}"
+    for name in fastpath_switches
+)
+if config_bool(qwenvl.get("musa_fla_fastpath", False)):
+    try:
+        import fla  # noqa: F401
+    except ImportError as error:
+        raise SystemExit(
+            "Error: framework.qwenvl.musa_fla_fastpath=true requires "
+            "fla-core and flash-linear-attention."
+        ) from error
+print(f"attention={attn_implementation}/{sdpa_backend} {switch_summary}")
+PY
+)
 
 echo "Qwen3.5 training: nodes=${NNODES}, node_rank=${NODE_RANK}, processes=${NUM_PROCESSES}"
-echo "Attention backend: ${ATTN_IMPLEMENTATION}/${SDPA_BACKEND}"
+echo "Qwen3.5 config from YAML: ${QWEN_CONFIG_SUMMARY}"
 echo "TF32 policy: ${STARVLA_ALLOW_TF32}"
-echo "Experimental MUSA FLA fast path: ${STARVLA_QWEN35_FLA_FASTPATH}"
 echo "Model directory: ${BASE_VLM}"
 echo "Dataset directory: ${DATA_ROOT_DIR}"
 echo "MFU BF16 peak assumption per device: ${GPU_PEAK_TFLOPS} TFLOPS"
@@ -151,10 +196,8 @@ echo "Run output: ${OUTPUT_PATH}"
   --config_yaml "${CONFIG_YAML}" \
   --framework.name "${FRAMEWORK_NAME}" \
   --framework.qwenvl.base_vlm "${BASE_VLM}" \
-  --framework.qwenvl.attn_implementation "${ATTN_IMPLEMENTATION}" \
-  --framework.qwenvl.sdpa_backend "${SDPA_BACKEND}" \
   --datasets.vla_data.data_root_dir "${DATA_ROOT_DIR}" \
-  --datasets.vla_data.per_device_batch_size "${PER_DEVICE_BATCH_SIZE:-1}" \
+  --datasets.vla_data.per_device_batch_size "${PER_DEVICE_BATCH_SIZE}" \
   --datasets.vla_data.data_mix "${DATA_MIX}" \
   --trainer.freeze_modules "${FREEZE_MODULE_LIST}" \
   --trainer.max_train_steps "${MAX_TRAIN_STEPS:-150000}" \

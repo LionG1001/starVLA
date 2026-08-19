@@ -1,4 +1,3 @@
-import os
 import sys
 import types
 import unittest
@@ -72,11 +71,10 @@ class Qwen35MusaCompatibilityTest(unittest.TestCase):
             qwen35_musa,
             "_musa_is_available",
             return_value=True,
-        ), mock.patch.dict(
-            os.environ,
-            {"STARVLA_QWEN35_FLA_FASTPATH": "0"},
         ):
-            patched = qwen35_musa.configure_qwen35_musa_fla_path(model)
+            patched = qwen35_musa.configure_qwen35_musa_fla_path(
+                model, {"musa_fla_fastpath": False}
+            )
 
         layer = model.linear_attention
         self.assertEqual(patched, 0)
@@ -86,6 +84,25 @@ class Qwen35MusaCompatibilityTest(unittest.TestCase):
             reference_module.torch_chunk_gated_delta_rule,
         )
         self.assertIsInstance(layer.norm, ReferenceNorm)
+
+    def test_on_policy_installs_fla_path_from_yaml_config(self):
+        model = FakeQwen35Model()
+
+        with mock.patch.object(
+            qwen35_musa,
+            "_musa_is_available",
+            return_value=True,
+        ), mock.patch.object(
+            qwen35_musa,
+            "install_qwen35_musa_fla_training_fastpath",
+            return_value=24,
+        ) as install_fastpath:
+            patched = qwen35_musa.configure_qwen35_musa_fla_path(
+                model, {"musa_fla_fastpath": True}
+            )
+
+        self.assertEqual(patched, 24)
+        install_fastpath.assert_called_once_with(model)
 
 
 if __name__ == "__main__":
