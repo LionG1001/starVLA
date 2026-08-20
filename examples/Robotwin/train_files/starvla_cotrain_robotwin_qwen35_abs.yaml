@@ -26,6 +26,10 @@ framework:
     # 同代码 4 机配对训练改善约 0.64%。该低风险等价替换默认开启，
     # 设为 false 可立即回退原 Conv3D；参数和 state_dict 保持不变。
     musa_vision_patch_linear_fastpath: true
+    # 仅将 vision/head_dim=64 切到 packed MUSA FlashAttention；文本仍为 eager。
+    # 真实 12×256 packed shape 前后向快 4.08 倍，4 机配对训练改善 19.54%；
+    # output/梯度和短训 loss 均 finite，且未调用 Mate，因此默认开启。
+    musa_vision_flash_attention: true
     # Qwen3.5 会把原占位符 🔍 拆成 3 个 token。<|fim_pad|> 是官方
     # tokenizer 中的保留单 token；代码启动时还会验证连续重复后不被 BPE 合并。
     action_token: "<|fim_pad|>"
