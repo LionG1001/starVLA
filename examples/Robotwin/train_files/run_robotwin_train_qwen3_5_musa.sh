@@ -163,7 +163,7 @@ def config_bool(value):
             return True
         if normalized in {"0", "false", "no", "off"}:
             return False
-    raise SystemExit(f"Error: fast-path switch must be boolean, got {value!r}.")
+    raise SystemExit(f"Error: configuration switch must be boolean, got {value!r}.")
 
 
 switch_summary = " ".join(
@@ -171,6 +171,9 @@ switch_summary = " ".join(
     for name in fastpath_switches
 )
 zero1_native_avg = config_bool(trainer.get("musa_zero1_native_avg", False))
+gradient_checkpointing = config_bool(
+    trainer.get("enable_gradient_checkpointing", False)
+)
 if config_bool(qwenvl.get("musa_fla_fastpath", False)):
     try:
         import fla  # noqa: F401
@@ -181,7 +184,8 @@ if config_bool(qwenvl.get("musa_fla_fastpath", False)):
         ) from error
 print(
     f"attention={attn_implementation}/{sdpa_backend} {switch_summary} "
-    f"musa_zero1_native_avg={str(zero1_native_avg).lower()}"
+    f"musa_zero1_native_avg={str(zero1_native_avg).lower()} "
+    f"gradient_checkpointing={str(gradient_checkpointing).lower()}"
 )
 PY
 )

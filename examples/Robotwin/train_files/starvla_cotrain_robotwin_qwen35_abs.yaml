@@ -143,5 +143,7 @@ trainer:
   is_resume: false
   resume_epoch: null
   resume_step: null
-  enable_gradient_checkpointing: true
+  # bs=4 基线显存余量充足；activation checkpointing 会在反向阶段重跑前向层，
+  # 因此默认关闭以减少重复计算。更大 batch/shape 遇到 OOM 时可显式开启。
+  enable_gradient_checkpointing: false
   enable_mixed_precision_training: true

@@ -4,7 +4,7 @@
 # Design and Merged by [Jinhui YE / HKUST University] in [2026].
 
 from contextlib import nullcontext
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -37,6 +37,48 @@ DEFAULT_VIDEO_TOKEN = "<video>"
 
 _ACTION_TOKEN_MIN = 248077 # how can we know this range? check how you add fast tokens into VLM
 _ACTION_TOKEN_MAX = 248077 + 2047 # here only for fast_tokenizer, see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md
+
+
+def _config_bool(value: Any, *, name: str) -> bool:
+    """Parse a strict bool so quoted YAML/CLI values cannot silently invert it."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean, but got {value!r}.")
+
+
+def _configure_gradient_checkpointing(model: nn.Module, trainer_config: Any) -> bool:
+    """Apply and verify the Qwen3.5 activation-checkpointing policy."""
+    setting_name = "trainer.enable_gradient_checkpointing"
+    enabled = _config_bool(
+        trainer_config.get("enable_gradient_checkpointing", False),
+        name=setting_name,
+    )
+    configure = getattr(
+        model,
+        "gradient_checkpointing_enable" if enabled else "gradient_checkpointing_disable",
+        None,
+    )
+    if not callable(configure):
+        raise RuntimeError(
+            f"{setting_name}={enabled} was requested, but this Qwen3.5 model "
+            "does not expose the corresponding gradient-checkpointing API."
+        )
+    configure()
+    active = bool(getattr(model, "is_gradient_checkpointing", False))
+    if active != enabled:
+        raise RuntimeError(
+            f"Failed to apply {setting_name}={enabled}: "
+            f"model.is_gradient_checkpointing={active}."
+        )
+    return active
 
 
 def _accelerator_autocast(dtype: torch.dtype):
@@ -93,6 +135,10 @@ class _QWen3_5_VL_Interface(nn.Module):
             model_id,
             attn_implementation=attn_implementation,
             dtype=torch.bfloat16,
+        )
+        self.gradient_checkpointing_enabled = _configure_gradient_checkpointing(
+            model,
+            config.trainer,
         )
         self.musa_vision_flash_attention_layers = (
             configure_qwen35_musa_vision_flash_attention(model, qwenvl_config)
