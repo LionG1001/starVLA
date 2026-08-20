@@ -179,7 +179,131 @@ wrapper 在每次 Qwen3.5 `forward`/`generate` 外使用 `sdpa_kernel(SDPBackend
 
 FLA 0.4.2 是当前环境适配基线，不代表它在所有 MUSA/Triton 组合上都已验证。它必须先完成 forward、backward、梯度、短训 loss、显存和长跑验证，再考虑默认打开。
 
-### 7.3 TF32 与 RoPE
+### 7.3 FLA causal-conv transpose copy elision
+
+#### 问题来自哪里
+
+Qwen3.5 的 `Qwen3_5GatedDeltaNet` 和 FLA causal conv 对张量布局的接口约定不同：
+
+- Qwen causal-conv 接口使用 `[B, D, T]`；
+- FLA `causal_conv1d` 使用 `[B, T, D]`；
+- causal conv 后，Qwen 又立即把结果转回 `[B, T, D]`，再沿最后一维拆分 Q/K/V。
+
+其中 `transpose(1, 2)` 通常只交换 shape 和 stride 元数据，返回共享原存储的 view，并不搬运数据；对非连续 view 调用 `contiguous()` 才会申请新存储并复制全部元素。原 adapter 在返回处强制物化了一次马上会被转回去的中间布局：
+
+```text
+原路径：
+FLA output [B, T, D]，连续
+  -> transpose(1, 2)                 # [B, D, T] view，不复制
+  -> contiguous()                    # [B, D, T] 新存储，完整复制
+  -> Qwen transpose(1, 2)            # [B, T, D] view，非连续
+
+优化路径：
+FLA output [B, T, D]，连续
+  -> transpose(1, 2)                 # [B, D, T] view，不复制
+  -> Qwen transpose(1, 2)            # 恢复 [B, T, D] 连续布局
+```
+
+因此优化只删除 adapter **输出端**的 `.contiguous()`：
+
+```python
+# 原实现：物化一个调用者马上会转回去的 [B, D, T]
+return output.transpose(1, 2).contiguous()
+
+# 当前候选：保留 view，让调用者的下一次 transpose 恢复 FLA 原布局
+return output.transpose(1, 2)
+```
+
+adapter **输入端**的 `x.transpose(1, 2).contiguous()` 仍然保留，因为它负责满足 FLA kernel 的 `[B, T, D]` 连续输入约束。这项改动不是无条件删除所有 `.contiguous()`，而是根据紧邻消费者的实际布局需求，消除一次可证明冗余的物化。
+
+#### 为什么数值和反向传播不变
+
+两条路径的元素顺序相同，区别只在中间 `[B, D, T]` 是独立连续存储还是带 stride 的 view。`transpose` 是可微的 view 操作，反向传播会按相反的维度映射梯度；删除只复制数据、不改变数值的 `contiguous()`，不会改变 causal conv、Q/K/V 拆分或梯度的数学定义。
+
+`tests/test_qwen35_fla_causal_conv_layout.py` 对原路径和候选路径做了以下契约检查：
+
+1. adapter 输出和 Qwen 消费后的输出完全一致；
+2. 输入梯度完全一致；
+3. FLA 输入仍为连续张量；
+4. 候选 adapter 输出是 view，而 Qwen 立即 transpose 后恢复为连续布局。
+
+#### 真实 shape、局部收益与结论
+
+当前 `batch_size=4` 训练 shape 为 FLA `[4, 291, 8192]`、Qwen adapter `[4, 8192, 291]`，dtype 为 BF16。原路径每层复制的张量载荷为：
+
+```text
+4 * 291 * 8192 * 2 bytes = 19,070,976 bytes
+                             = 19.07 MB
+                             = 18.19 MiB
+```
+
+24 个 Gated DeltaNet 层每个 step 的前向合计会物化约 `436.5 MiB` 张量载荷；这里表示被复制的数据量，不等同于峰值显存，因为不同层的临时存储生命周期并不相同。
+
+真实 MUSA shape 的 forward + backward A/B 结果如下：
+
+| 指标 | 原物化路径 | view 路径 | 结果 |
+| --- | ---: | ---: | ---: |
+| 单层中位数 | 0.97994 ms | 0.89143 ms | 1.099 倍加速 |
+| 输出最大绝对误差 | - | 0 | 完全一致且有限 |
+| input/weight/bias 梯度最大绝对误差 | - | 0 | 完全一致且有限 |
+
+单层绝对收益约 `0.0885 ms`。按 24 层线性外推，乐观上限约 `2.12 ms/step`，只占当前 `0.77164 s/step` 基线的约 `0.275%`。该改动虽然低于通用的 3% 独立优化门槛，但它删除了可证明冗余的 copy、数值完全一致且不增加参数或依赖；经项目 review 后随 FLA fastpath 一并采用。若后续布局契约变化，可按下文方式立即回退。
+
+验证入口：
+
+```bash
+python -m pytest -q tests/test_qwen35_fla_causal_conv_layout.py
+python tests/benchmark_qwen35_fla_causal_conv_layout_musa.py \
+  --batch-size 4 \
+  --sequence-length 291 \
+  --channels 8192 \
+  --warmup 3 \
+  --repeats 10
+```
+
+适用范围仅是启用 StarVLA FLA 的 full-sequence Gated DeltaNet 训练路径；它不影响 full attention 的 eager/SDPA/Flash 后端，也不改 generation 的 recurrent 路径。若后续 FLA 或 Transformers 改变接口布局，回退方式是把 adapter 返回值恢复为 `.transpose(1, 2).contiguous()`，并重新运行上述 layout UT。
+
+### 7.4 Vision PatchEmbed Conv3D→Linear
+
+Transformers 5.2.0 的 `Qwen3_5VisionPatchEmbed` 会把每个输入行恢复成一个完整的 `[3,2,16,16]` patch，再使用 `kernel_size == stride == [2,16,16]` 的 Conv3D。因为卷积核恰好覆盖整个 patch，输出空间恒为 `1×1×1`，没有滑窗重叠、padding、dilation 或 groups 语义。它严格等价于：
+
+```text
+[3072, 1536] @ [1536, 1024] + bias
+```
+
+fastpath 保留原 `nn.Conv3d` 模块和参数对象，只把输入与权重 view 成二维张量后调用 `F.linear`。因此 state_dict key、optimizer 参数和 checkpoint 格式均不变。只有 Conv3D 几何条件完全匹配时才安装；显式开启但找不到目标模块或几何条件不支持时 fail closed，运行期条件变化则调用保存的原 Conv3D forward。
+
+配置唯一来自 YAML：
+
+```yaml
+framework:
+  qwenvl:
+    musa_vision_patch_linear_fastpath: true
+```
+
+设为 `false` 可恢复原 Conv3D。当前默认开启，是项目对该低风险等价替换的显式采用决定；不是因为它达到了通用 3% 门槛。
+
+真实 Transformers PatchEmbed、BF16、`3072` patches 的 MUSA 门禁：
+
+| 指标 | Conv3D | Linear fastpath | 结果 |
+| --- | ---: | ---: | ---: |
+| forward + weight/bias backward 中位数 | 12.772 ms | 0.265 ms | 48.18× |
+| output 相对 L2 | - | 5.23e-5 | 通过 |
+| weight grad 相对 L2 | - | 8.66e-5 | 通过 |
+| input/bias grad 最大绝对误差 | - | 0 | 通过 |
+
+4 机 × 8 卡、单卡 bs=4 的同代码隔离 A/B 比较 step 11–130：Conv3D 平均 `760.502 ms/step`，Linear 平均 `755.647 ms/step`，改善 `4.855 ms/step`（`0.638%`）；120 个配对 step 中 74 个更快，两轮 loss 均 finite。算子级收益明确，但端到端信号较小，因此必须保留显式回退并在升级 muDNN/torch_musa 后重新 A/B。
+
+验证入口：
+
+```bash
+python -m pytest -q tests/test_qwen35_vision_patch_fastpath.py
+MUSA_VISIBLE_DEVICES=0 PYTHONPATH=/home/jd/gl_dev/starVLA \
+python tests/benchmark_qwen35_vision_patch_musa.py \
+  --patches 3072 --warmup 10 --iterations 30
+```
+
+### 7.5 TF32 与 RoPE
 
 本分支不保留 RoPE 算子替换或数值 workaround。`STARVLA_ALLOW_TF32` 只控制 TF32 策略：
 

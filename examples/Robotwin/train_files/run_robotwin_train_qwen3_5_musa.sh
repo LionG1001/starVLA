@@ -144,7 +144,10 @@ if attn_implementation != "eager":
         f"framework.qwenvl.attn_implementation=eager in {config_path}; "
         f"found {attn_implementation!r}."
     )
-fastpath_switches = ("musa_fla_fastpath",)
+fastpath_switches = (
+    "musa_fla_fastpath",
+    "musa_vision_patch_linear_fastpath",
+)
 
 
 def config_bool(value):
