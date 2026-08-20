@@ -11,7 +11,7 @@ numerically safe for Qwen3.5's head dimension 256.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
@@ -22,6 +22,48 @@ logger = logging.getLogger(__name__)
 
 FLASH_CONFIG_ALIAS = "flash"
 MUSA_VARLEN_ATTENTION = "musa_flash_varlen"
+_VISION_ORIGINAL_ATTENTION_ATTR = "_starvla_qwen35_original_vision_attention"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _config_bool(value: Any, *, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_VALUES:
+            return True
+        if normalized in _FALSE_VALUES:
+            return False
+    raise ValueError(f"{name} must be a boolean value, got {value!r}.")
+
+
+def _musa_is_available() -> bool:
+    return bool(hasattr(torch, "musa") and torch.musa.is_available())
+
+
+def _register_musa_varlen_attention(*, require_mate: bool) -> None:
+    try:
+        from flash_attn import flash_attn_varlen_func  # noqa: F401
+        from flash_attn.backends import musa as flash_attn_musa
+    except ImportError as error:
+        raise ImportError(
+            "The Qwen3.5 MUSA varlen attention path requires the MUSA "
+            "flash-attn package."
+        ) from error
+    if require_mate and not flash_attn_musa.is_mate_available():
+        raise RuntimeError(
+            "Qwen3.5 text FlashAttention requires Mate/TileLang for "
+            "head_dim=256 backward."
+        )
+
+    ALL_ATTENTION_FUNCTIONS.register(
+        MUSA_VARLEN_ATTENTION, musa_varlen_flash_attention_forward
+    )
+    ALL_MASK_ATTENTION_FUNCTIONS.register(MUSA_VARLEN_ATTENTION, _musa_varlen_mask)
 
 
 def _musa_varlen_mask(
@@ -80,10 +122,11 @@ def musa_varlen_flash_attention_forward(
         from flash_attn.bert_padding import pad_input, unpad_input
     except ImportError as error:
         raise ImportError(
-            "attn_implementation=flash requires the MUSA flash-attn package and its Mate dependency."
+            "Qwen3.5 MUSA attention requires the MUSA flash-attn package; "
+            "head_dim=256 additionally requires Mate/TileLang."
         ) from error
 
-    if not flash_attn_musa.is_mate_available():
+    if head_dims[0] == 256 and not flash_attn_musa.is_mate_available():
         raise RuntimeError(
             "attn_implementation=flash requires Mate/TileLang for Qwen3.5 head_dim=256."
         )
@@ -174,19 +217,7 @@ def resolve_qwen35_attention_implementation(requested: str) -> str:
     if requested != FLASH_CONFIG_ALIAS:
         return requested
 
-    try:
-        from flash_attn.backends import musa as flash_attn_musa
-    except ImportError as error:
-        raise ImportError(
-            "attn_implementation=flash was requested, but the MUSA flash-attn package is unavailable."
-        ) from error
-    if not flash_attn_musa.is_mate_available():
-        raise RuntimeError(
-            "attn_implementation=flash requires Mate/TileLang for Qwen3.5 head_dim=256 backward."
-        )
-
-    ALL_ATTENTION_FUNCTIONS.register(MUSA_VARLEN_ATTENTION, musa_varlen_flash_attention_forward)
-    ALL_MASK_ATTENTION_FUNCTIONS.register(MUSA_VARLEN_ATTENTION, _musa_varlen_mask)
+    _register_musa_varlen_attention(require_mate=True)
 
     # The custom key intentionally contains "flash" so Qwen3.5 vision forwards
     # its native cu_seqlens to the adapter. Transformers would otherwise try to
@@ -219,3 +250,85 @@ def resolve_qwen35_attention_implementation(requested: str) -> str:
         MUSA_VARLEN_ATTENTION,
     )
     return MUSA_VARLEN_ATTENTION
+
+
+def install_qwen35_musa_vision_flash_attention(model: torch.nn.Module) -> int:
+    """Route only Qwen3.5 vision attention through packed MUSA FlashAttention."""
+    _register_musa_varlen_attention(require_mate=False)
+
+    found = 0
+    for module in model.modules():
+        if module.__class__.__name__ != "Qwen3_5VisionAttention":
+            continue
+        found += 1
+        if not hasattr(module, _VISION_ORIGINAL_ATTENTION_ATTR):
+            setattr(
+                module,
+                _VISION_ORIGINAL_ATTENTION_ATTR,
+                module.config._attn_implementation,
+            )
+        module.config._attn_implementation = MUSA_VARLEN_ATTENTION
+
+    if found == 0:
+        raise RuntimeError(
+            "Vision FlashAttention was requested, but no "
+            "Qwen3_5VisionAttention module was found."
+        )
+    logger.warning(
+        "Enabled packed MUSA FlashAttention for %d Qwen3.5 vision attention "
+        "module(s); text attention remains unchanged.",
+        found,
+    )
+    return found
+
+
+def disable_qwen35_musa_vision_flash_attention(model: torch.nn.Module) -> int:
+    """Restore the attention implementation saved on each vision module."""
+    restored = 0
+    restored_configs: set[int] = set()
+    for module in model.modules():
+        original = getattr(module, _VISION_ORIGINAL_ATTENTION_ATTR, None)
+        if original is None:
+            continue
+        config_id = id(module.config)
+        if config_id not in restored_configs:
+            module.config._attn_implementation = original
+            restored_configs.add(config_id)
+        delattr(module, _VISION_ORIGINAL_ATTENTION_ATTR)
+        restored += 1
+    return restored
+
+
+def configure_qwen35_musa_vision_flash_attention(
+    model: torch.nn.Module, qwenvl_config: Any
+) -> int:
+    """Apply the YAML-selected vision-only FlashAttention policy."""
+    enabled = _config_bool(
+        qwenvl_config.get("musa_vision_flash_attention", False),
+        name="framework.qwenvl.musa_vision_flash_attention",
+    )
+    if not enabled:
+        disable_qwen35_musa_vision_flash_attention(model)
+        return 0
+    if qwenvl_config.get("attn_implementation") != "eager":
+        raise RuntimeError(
+            "Vision-only MUSA FlashAttention requires the model-level "
+            "framework.qwenvl.attn_implementation=eager baseline."
+        )
+    if not _musa_is_available():
+        raise RuntimeError(
+            "framework.qwenvl.musa_vision_flash_attention=true was requested, "
+            "but MUSA is unavailable."
+        )
+    return install_qwen35_musa_vision_flash_attention(model)
+
+
+__all__ = [
+    "FLASH_CONFIG_ALIAS",
+    "MUSA_VARLEN_ATTENTION",
+    "configure_qwen35_musa_vision_flash_attention",
+    "disable_qwen35_musa_vision_flash_attention",
+    "install_qwen35_musa_vision_flash_attention",
+    "musa_varlen_flash_attention_forward",
+    "resolve_qwen35_attention_implementation",
+]

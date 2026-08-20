@@ -147,6 +147,7 @@ if attn_implementation != "eager":
 fastpath_switches = (
     "musa_fla_fastpath",
     "musa_vision_patch_linear_fastpath",
+    "musa_vision_flash_attention",
 )
 
 

@@ -14,7 +14,10 @@ from transformers import AutoProcessor
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .qwen35_musa import configure_qwen35_musa_fla_path
-from .qwen35_musa_flash_attention import resolve_qwen35_attention_implementation
+from .qwen35_musa_flash_attention import (
+    configure_qwen35_musa_vision_flash_attention,
+    resolve_qwen35_attention_implementation,
+)
 from .qwen35_musa_vision_patch import configure_qwen35_musa_vision_patch_path
 
 try:
@@ -90,6 +93,9 @@ class _QWen3_5_VL_Interface(nn.Module):
             model_id,
             attn_implementation=attn_implementation,
             dtype=torch.bfloat16,
+        )
+        self.musa_vision_flash_attention_layers = (
+            configure_qwen35_musa_vision_flash_attention(model, qwenvl_config)
         )
         self.musa_vision_patch_linear_layers = (
             configure_qwen35_musa_vision_patch_path(model, qwenvl_config)
