@@ -43,6 +43,7 @@ from starVLA.training.mfu import (
     calculate_per_device_mfu,
     estimate_qwen35_training_flops,
 )
+from starVLA.training.musa_zero1_native_avg import configure_musa_zero1_native_avg
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, normalize_dotlist_args
 
@@ -441,6 +442,11 @@ class VLATrainer(TrainerUtils):
             self.model,
             self.optimizer,
             self.vla_train_dataloader,
+        )
+        configure_musa_zero1_native_avg(
+            self.model,
+            self.optimizer,
+            self.config.trainer,
         )
 
         # self._init_wandb()

@@ -363,6 +363,21 @@ starVLA/config/deepseeds/deepspeed_zero1_musa.yaml
 
 DeepSpeed 配置为 BF16 + ZeRO-1。ZeRO-1 主要切分 optimizer state，参数和梯度并不像 ZeRO-3 那样全部切分，优点是路径简单、适合先做正确性和性能基线。
 
+### 8.1 MUSA ZeRO-1 原生 AVG
+
+完整原理、DeepSpeed 调用链、Trace 证据、数值门禁和四机 A/B 见 [`qwen3_5_musa_zero1_native_avg.md`](qwen3_5_musa_zero1_native_avg.md)。
+
+当前 bs=4 基线通过实例级 adapter，把 ZeRO-1 默认的“BF16 全桶预除、rank-slice flatten/cat、AllReduce SUM”改为对已有连续 IPG bucket 直接执行 MCCL `AVG`。它删除约 7.97 GB 大梯度桶通信前的两次额外内存遍历，不减少 AllReduce 数据量，也没有引入通信重叠。四机 120 个稳态 step 的平均 model time 从 `602.617 ms` 降到 `574.078 ms`，改善 `4.736%`，两轮 loss 均为 finite。
+
+```yaml
+trainer:
+  musa_zero1_native_avg: true
+```
+
+该路径仅支持 MUSA、ZeRO-1、`overlap_comm=false`、`sequence_parallel_size=1` 的已验证组合；关闭开关即恢复默认 reducer。
+
+### 8.2 Optimizer 实现
+
 Optimizer 开关：
 
 ```text

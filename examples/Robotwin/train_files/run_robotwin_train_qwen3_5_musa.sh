@@ -136,6 +136,7 @@ with open(config_path, encoding="utf-8") as config_file:
     config = yaml.safe_load(config_file)
 
 qwenvl = config.get("framework", {}).get("qwenvl", {})
+trainer = config.get("trainer", {})
 attn_implementation = qwenvl.get("attn_implementation")
 sdpa_backend = qwenvl.get("sdpa_backend", "auto")
 if attn_implementation != "eager":
@@ -169,6 +170,7 @@ switch_summary = " ".join(
     f"{name}={str(config_bool(qwenvl.get(name, False))).lower()}"
     for name in fastpath_switches
 )
+zero1_native_avg = config_bool(trainer.get("musa_zero1_native_avg", False))
 if config_bool(qwenvl.get("musa_fla_fastpath", False)):
     try:
         import fla  # noqa: F401
@@ -177,7 +179,10 @@ if config_bool(qwenvl.get("musa_fla_fastpath", False)):
             "Error: framework.qwenvl.musa_fla_fastpath=true requires "
             "fla-core and flash-linear-attention."
         ) from error
-print(f"attention={attn_implementation}/{sdpa_backend} {switch_summary}")
+print(
+    f"attention={attn_implementation}/{sdpa_backend} {switch_summary} "
+    f"musa_zero1_native_avg={str(zero1_native_avg).lower()}"
+)
 PY
 )
 
