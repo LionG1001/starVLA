@@ -99,6 +99,9 @@ datasets:
     video_backend: pyav
 
 trainer:
+  # Experimental ZeRO-1 fast path: let MCCL average the existing contiguous
+  # gradient bucket directly, avoiding a full BF16 pre-divide and rank-slice cat.
+  musa_zero1_native_avg: true
   # 单卡 BF16 稠密理论峰值假设，仅作为 MFU 分母，不会自动探测。
   # S5000 的 1000 TFLOPS 是 FP8 口径；本 BF16 训练继续使用 460 TFLOPS。
   # 不要误用稀疏算力或整机总算力；可通过启动脚本 GPU_PEAK_TFLOPS 覆盖。
