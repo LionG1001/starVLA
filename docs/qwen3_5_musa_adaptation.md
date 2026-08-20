@@ -152,18 +152,16 @@ logits_to_keep = 1
 
 Qwen3.5-4B 是混合架构：32 层文本层中，8 层是普通 full attention，24 层是 Gated DeltaNet 线性注意力。这两类层使用不同的后端。
 
-### 7.1 Full attention：默认 SDPA math
+### 7.1 Full attention：默认 eager
 
-Qwen3.5-4B full attention 的 `head_dim=256`。当前目标 MUSA 环境中，SDPA 自动选择 flash 路径时存在 RoPE/注意力执行异常风险，所以正确性基线为：
+Qwen3.5-4B 文本 full attention 的 `head_dim=256`。当前目标 MUSA 环境中，SDPA flash/math 均出现过 mask 数值异常，直接 FlashAttention 又会让 `head_dim=256` backward 进入 Mate/TileLang hang 路径，所以正确性基线为：
 
 ```yaml
-attn_implementation: sdpa
-sdpa_backend: math
+attn_implementation: eager
+sdpa_backend: auto
 ```
 
-wrapper 在每次 Qwen3.5 `forward`/`generate` 外使用 `sdpa_kernel(SDPBackend.MATH)`，限制本次调用，不修改 Transformers 安装目录。
-
-安全回退是 `eager`。之后如果新版 MUSA FlashAttention 已支持当前 shape，再将 `sdpa_backend` 切换为 `auto` 做单变量 A/B，不要在长跑中盲目切换。
+`sdpa_backend` 在 eager 路径中不参与执行，仅作为完整配置记录。后续若新版 torch_musa 修复 `head_dim=256` 和 mask 路径，应先做真实 shape 前后向与短训 A/B，再修改模型级 attention；不能用视觉 `head_dim=64` 已通过来推断文本路径也安全。
 
 ### 7.2 Gated DeltaNet：参考路径与 FLA
 
@@ -303,7 +301,48 @@ python tests/benchmark_qwen35_vision_patch_musa.py \
   --patches 3072 --warmup 10 --iterations 30
 ```
 
-### 7.5 TF32 与 RoPE
+### 7.5 Vision-only packed FlashAttention
+
+完整原理、shape、backend 路由、GroupGEMM 评估和四机门禁见 [`qwen3_5_vision_only_flash_attention_musa.md`](qwen3_5_vision_only_flash_attention_musa.md)。
+
+模型级 `attn_implementation` 仍保持 eager，但可通过独立 YAML 开关，只把 24 个 `Qwen3_5VisionAttention` 切到 `musa_flash_varlen`：
+
+```yaml
+framework:
+  qwenvl:
+    attn_implementation: eager
+    musa_vision_flash_attention: true
+```
+
+视觉路径是 `head_dim=64`、非 causal attention。当前 bs=4 训练每卡有 `3072` 个原始视觉 token，即 12 段、每段 256 token；eager 会按 `cu_seqlens` 拆成 12 段，逐段 materialize attention score 并执行 QK BMM、scale、FP32 softmax、cast 和 PV BMM。融合路径直接把 packed Q/K/V 与原生 `cu_seqlens` 交给一次 MUSA varlen Flash kernel。
+
+这里没有把 BMM 改成 GroupGEMM：BMM 的 batch 维 `16` 已经把 16 个 head 放进一次 launch，QK 与 PV 之间又有 scale/softmax 的严格依赖，无法组成同一个 group。当前 PyTorch 虽暴露私有 `aten::_scaled_grouped_mm`，但 dispatcher 中没有 MUSA `PrivateUse1`/`AutogradPrivateUse1` kernel，也不是普通 BF16 BMM 的兼容替代。因此融合完整 attention 数据流比机械替换矩阵 API 更合理。
+
+该开关只修改 vision config，不修改 text config。`head_dim=64` backend spy 的 Mate 调用数为 0，所以它不会进入此前文本 `head_dim=256` 实训 hang 的 Mate/TileLang 路径。显式开启但缺少 MUSA flash-attn、MUSA 不可用或找不到视觉 attention 模块时会 fail closed；设为 `false` 即恢复 eager vision attention。
+
+真实 `12×256` packed、16 heads、BF16 模块门禁：
+
+| 指标 | eager | vision Flash | 结果 |
+| --- | ---: | ---: | ---: |
+| forward 中位数 | 2.776 ms | 0.710 ms | 3.91× |
+| forward + backward 中位数 | 7.078 ms | 1.735 ms | 4.08× |
+| output 相对 L2 | - | 0.324% | finite，通过 |
+| input/QKV/proj grad 相对 L2 | - | 0.356%–0.374% | finite，通过 |
+| Mate 调用 | - | 0 | MUSA extension |
+
+4 机 × 8 卡、单卡 bs=4 的同代码单变量 A/B 比较 step 11–130：OFF 平均 `750.123 ms/step`，ON 平均 `603.548 ms/step`，改善 `146.575 ms/step`（`19.54%`）；120 个配对 step 全部更快，语言/视觉/action token shape 完全一致。平均 MFU 从 `9.335%` 提升到 `11.602%`，两轮 loss 全部 finite，step 130 分别为 `0.21973` 和 `0.21875`。因此优化默认开启。
+
+验证入口：
+
+```bash
+python -m pytest -q \
+  tests/test_qwen35_vision_flash_attention.py \
+  tests/test_qwen35_flash_attn_musa.py
+python tests/benchmark_qwen35_vision_flash_attention_musa.py \
+  --packed-sequences 12 --sequence-length 256 --warmup 5 --repeats 20
+```
+
+### 7.6 TF32 与 RoPE
 
 本分支不保留 RoPE 算子替换或数值 workaround。`STARVLA_ALLOW_TF32` 只控制 TF32 策略：
 
