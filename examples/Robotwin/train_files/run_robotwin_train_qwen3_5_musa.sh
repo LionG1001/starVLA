@@ -149,6 +149,10 @@ fastpath_switches = (
     "musa_fla_fastpath",
     "musa_vision_patch_linear_fastpath",
     "musa_vision_flash_attention",
+    "musa_fused_rmsnorm",
+    "musa_fused_gated_rmsnorm",
+    "musa_fused_rope",
+    "musa_fused_swiglu",
 )
 
 

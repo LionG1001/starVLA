@@ -18,6 +18,7 @@ from .qwen35_musa_flash_attention import (
     configure_qwen35_musa_vision_flash_attention,
     resolve_qwen35_attention_implementation,
 )
+from .qwen35_musa_fused_ops import configure_qwen35_musa_fused_ops
 from .qwen35_musa_vision_patch import configure_qwen35_musa_vision_patch_path
 
 try:
@@ -147,6 +148,9 @@ class _QWen3_5_VL_Interface(nn.Module):
             configure_qwen35_musa_vision_patch_path(model, qwenvl_config)
         )
         self.musa_fla_linear_layers = configure_qwen35_musa_fla_path(
+            model, qwenvl_config
+        )
+        self.musa_fused_ops_status = configure_qwen35_musa_fused_ops(
             model, qwenvl_config
         )
         processor = AutoProcessor.from_pretrained(model_id)

@@ -30,6 +30,16 @@ framework:
     # 真实 12×256 packed shape 前后向快 4.08 倍，4 机配对训练改善 19.54%；
     # output/梯度和短训 loss 均 finite，且未调用 Mate，因此默认开启。
     musa_vision_flash_attention: true
+    # torch_musa/muDNN fused operators. Gated RMSNorm remains owned by the
+    # validated FLA path above; the other three paths retain eager fallbacks.
+    musa_fused_rmsnorm: true
+    musa_fused_gated_rmsnorm: false
+    musa_fused_rope: true
+    # Packs gate/up weights once during model construction, runs one combined
+    # Linear, and feeds its contiguous [gate | up] output directly to SwiGLU.
+    # Model state_dict keys stay gate_proj/up_proj compatible; optimizer state
+    # must be created with the same setting and cannot resume an older layout.
+    musa_fused_swiglu: true
     # Qwen3.5 会把原占位符 🔍 拆成 3 个 token。<|fim_pad|> 是官方
     # tokenizer 中的保留单 token；代码启动时还会验证连续重复后不被 BPE 合并。
     action_token: "<|fim_pad|>"
